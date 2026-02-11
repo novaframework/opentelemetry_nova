@@ -1,6 +1,6 @@
 {application, opentelemetry_nova, [
     {description, "OpenTelemetry instrumentation for the Nova web framework"},
-    {vsn, "0.1.0"},
+    {vsn, git},
     {registered, []},
     {applications, [kernel, stdlib, opentelemetry_api, opentelemetry_api_experimental]},
     {env, []},
