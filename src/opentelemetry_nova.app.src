@@ -4,5 +4,7 @@
     {registered, []},
     {applications, [kernel, stdlib, opentelemetry_api, opentelemetry_api_experimental]},
     {env, []},
-    {modules, []}
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, [{"GitHub", "https://github.com/novaframework/opentelemetry_nova"}]}
 ]}.
