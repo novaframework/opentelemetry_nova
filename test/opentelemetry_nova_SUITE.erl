@@ -29,10 +29,19 @@ all() ->
     [stream_handler_creates_span,
      stream_handler_captures_status,
      stream_handler_sets_error_on_5xx,
+     stream_handler_sets_error_type_on_5xx,
      stream_handler_ends_span_on_auth_rejection,
+     stream_handler_protocol_version,
+     stream_handler_client_address_xff,
+     stream_handler_client_address_forwarded,
+     stream_handler_client_address_peer_fallback,
      plugin_enriches_span,
+     plugin_sets_http_route,
+     plugin_sets_http_route_with_bindings,
      trace_context_propagation,
      metrics_request_duration,
+     metrics_request_duration_with_route,
+     metrics_error_type_in_metrics,
      metrics_active_requests,
      metrics_body_sizes].
 
@@ -81,7 +90,9 @@ stream_handler_creates_span(_Config) ->
             ?assertEqual(8080, maps:get('server.port', Attrs)),
             ?assertMatch(<<"127.0.0.1">>, maps:get('network.peer.address', Attrs)),
             ?assertEqual(12345, maps:get('network.peer.port', Attrs)),
-            ?assertEqual(<<"test-agent/1.0">>, maps:get('user_agent.original', Attrs))
+            ?assertEqual(<<"test-agent/1.0">>, maps:get('user_agent.original', Attrs)),
+            ?assertEqual(<<"1.1">>, maps:get('network.protocol.version', Attrs)),
+            ?assertEqual(<<"127.0.0.1">>, maps:get('client.address', Attrs))
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
@@ -109,6 +120,73 @@ stream_handler_sets_error_on_5xx(_Config) ->
     receive
         {span, #span{status = Status}} ->
             ?assertMatch(#status{code = ?OTEL_STATUS_ERROR}, Status)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+stream_handler_sets_error_type_on_5xx(_Config) ->
+    Req = make_req(<<"POST">>, <<"/crash">>),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 503, #{}, <<"Unavailable">>}, State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+
+    receive
+        {span, Span = #span{}} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"503">>, maps:get('error.type', Attrs)),
+            ?assertMatch(#status{code = ?OTEL_STATUS_ERROR}, Span#span.status)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+stream_handler_protocol_version(_Config) ->
+    Req = make_req_with_version(<<"GET">>, <<"/test">>, 'HTTP/2'),
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    otel_nova_stream_h:terminate(1, normal, State),
+
+    receive
+        {span, Span = #span{}} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"2">>, maps:get('network.protocol.version', Attrs))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+stream_handler_client_address_xff(_Config) ->
+    Req = make_req(<<"GET">>, <<"/test">>, #{<<"x-forwarded-for">> => <<"10.0.0.1, 10.0.0.2">>}),
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    otel_nova_stream_h:terminate(1, normal, State),
+
+    receive
+        {span, Span = #span{}} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"10.0.0.1">>, maps:get('client.address', Attrs))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+stream_handler_client_address_forwarded(_Config) ->
+    Req = make_req(<<"GET">>, <<"/test">>, #{<<"forwarded">> => <<"for=192.168.1.1;proto=https">>}),
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    otel_nova_stream_h:terminate(1, normal, State),
+
+    receive
+        {span, Span = #span{}} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"192.168.1.1">>, maps:get('client.address', Attrs))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+stream_handler_client_address_peer_fallback(_Config) ->
+    Req = make_req(<<"GET">>, <<"/test">>),
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    otel_nova_stream_h:terminate(1, normal, State),
+
+    receive
+        {span, Span = #span{}} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"127.0.0.1">>, maps:get('client.address', Attrs))
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
@@ -148,11 +226,51 @@ plugin_enriches_span(_Config) ->
 
     receive
         {span, Span = #span{name = Name}} ->
-            ?assertEqual(<<"GET fake_controller:index">>, Name),
+            ?assertEqual(<<"GET /users">>, Name),
             Attrs = otel_attributes:map(Span#span.attributes),
             ?assertEqual(<<"my_app">>, maps:get('nova.app', Attrs)),
             ?assertEqual(<<"fake_controller">>, maps:get('nova.controller', Attrs)),
-            ?assertEqual(<<"index">>, maps:get('nova.action', Attrs))
+            ?assertEqual(<<"index">>, maps:get('nova.action', Attrs)),
+            ?assertEqual(<<"/users">>, maps:get('http.route', Attrs))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+plugin_sets_http_route(_Config) ->
+    Req = make_req(<<"GET">>, <<"/api/health">>),
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+
+    Env = #{app => my_app, callback => fun fake_controller:health/1},
+    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+
+    receive
+        {span, Span = #span{name = Name}} ->
+            ?assertEqual(<<"GET /api/health">>, Name),
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"/api/health">>, maps:get('http.route', Attrs))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+plugin_sets_http_route_with_bindings(_Config) ->
+    Req0 = make_req(<<"GET">>, <<"/users/42/posts/99">>),
+    Req = Req0#{bindings => #{<<"user_id">> => <<"42">>, <<"post_id">> => <<"99">>}},
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+
+    Env = #{app => my_app, callback => fun fake_controller:show_post/1},
+    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+
+    receive
+        {span, Span = #span{name = Name}} ->
+            ?assertEqual(<<"GET /users/:user_id/posts/:post_id">>, Name),
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"/users/:user_id/posts/:post_id">>, maps:get('http.route', Attrs))
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
@@ -205,6 +323,43 @@ metrics_request_duration(_Config) ->
         ?assertEqual(<<"http">>, maps:get('url.scheme', Attrs)),
         ?assertEqual(<<"localhost">>, maps:get('server.address', Attrs)),
         ?assertEqual(8080, maps:get('server.port', Attrs))
+    end).
+
+metrics_request_duration_with_route(_Config) ->
+    Req = make_req(<<"GET">>, <<"/users">>),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+
+    Env = #{app => my_app, callback => fun fake_controller:index/1},
+    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    drain_spans(),
+
+    otel_meter_server:force_flush(),
+
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        DP = find_datapoint_with_status(200, Datapoints),
+        Attrs = DP#histogram_datapoint.attributes,
+        ?assertEqual(<<"/users">>, maps:get('http.route', Attrs)),
+        ?assertEqual(200, maps:get('http.response.status_code', Attrs))
+    end).
+
+metrics_error_type_in_metrics(_Config) ->
+    Req = make_req(<<"POST">>, <<"/crash">>),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 500, #{}, <<"Error">>}, State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    drain_spans(),
+
+    otel_meter_server:force_flush(),
+
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        DP = find_datapoint_with_status(500, Datapoints),
+        Attrs = DP#histogram_datapoint.attributes,
+        ?assertEqual(<<"500">>, maps:get('error.type', Attrs))
     end).
 
 metrics_active_requests(_Config) ->
@@ -278,6 +433,10 @@ make_req(Method, Path, ExtraHeaders) ->
       cert => undefined,
       pid => self(),
       streamid => 1}.
+
+make_req_with_version(Method, Path, Version) ->
+    Req = make_req(Method, Path),
+    Req#{version => Version}.
 
 drain_spans() ->
     receive {span, _} -> drain_spans()

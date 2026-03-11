@@ -1,13 +1,30 @@
 {"1.2.0",
-[{<<"opentelemetry_api">>,{pkg,<<"opentelemetry_api">>,<<"1.5.0">>},0},
+[{<<"cowboy">>,{pkg,<<"cowboy">>,<<"2.14.2">>},0},
+ {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.16.0">>},1},
+ {<<"opentelemetry">>,{pkg,<<"opentelemetry">>,<<"1.7.0">>},1},
+ {<<"opentelemetry_api">>,{pkg,<<"opentelemetry_api">>,<<"1.5.0">>},0},
  {<<"opentelemetry_api_experimental">>,
   {pkg,<<"opentelemetry_api_experimental">>,<<"0.5.1">>},
-  0}]}.
+  0},
+ {<<"opentelemetry_experimental">>,
+  {pkg,<<"opentelemetry_experimental">>,<<"0.5.1">>},
+  0},
+ {<<"ranch">>,{pkg,<<"ranch">>,<<"2.2.0">>},1}]}.
 [
 {pkg_hash,[
+ {<<"cowboy">>, <<"4008BE1DF6ADE45E4F2A4E9E2D22B36D0B5ABA4E20B0A0D7049E28D124E34847">>},
+ {<<"cowlib">>, <<"54592074EBBBB92EE4746C8A8846E5605052F29309D3A873468D76CDF932076F">>},
+ {<<"opentelemetry">>, <<"20D0F12D3D1C398D3670FD44FD1A7C495DD748AB3E5B692A7906662E2FB1A38A">>},
  {<<"opentelemetry_api">>, <<"1A676F3E3340CAB81C763E939A42E11A70C22863F645AA06AAFEFC689B5550CF">>},
- {<<"opentelemetry_api_experimental">>, <<"1B5AFACFCBD0834390336C845BC8AE08C8CF0D69BBED72EE53D178798B93E074">>}]},
+ {<<"opentelemetry_api_experimental">>, <<"1B5AFACFCBD0834390336C845BC8AE08C8CF0D69BBED72EE53D178798B93E074">>},
+ {<<"opentelemetry_experimental">>, <<"27F60EA61B9E42F919C219D52DD17881057921150130B7EB9F15BC902F34F11D">>},
+ {<<"ranch">>, <<"25528F82BC8D7C6152C57666CA99EC716510FE0925CB188172F41CE93117B1B0">>}]},
 {pkg_hash_ext,[
+ {<<"cowboy">>, <<"569081DA046E7B41B5DF36AA359BE71A0C8874E5B9CFF6F747073FC57BAF1AB9">>},
+ {<<"cowlib">>, <<"7F478D80D66B747344F0EA7708C187645CFCC08B11AA424632F78E25BF05DB51">>},
+ {<<"opentelemetry">>, <<"A9173B058C4549BF824CBC2F1D2FA2ADC5CDEDC22AA3F0F826951187BBD53131">>},
  {<<"opentelemetry_api">>, <<"F53EC8A1337AE4A487D43AC89DA4BD3A3C99DDF576655D071DEED8B56A2D5DDA">>},
- {<<"opentelemetry_api_experimental">>, <<"10297057EADA47267D4F832011BECEF07D25690E6BF91FEBCCFC4E740DBA1A6F">>}]}
+ {<<"opentelemetry_api_experimental">>, <<"10297057EADA47267D4F832011BECEF07D25690E6BF91FEBCCFC4E740DBA1A6F">>},
+ {<<"opentelemetry_experimental">>, <<"A1AD941294F1D3623C33E151FAA35613849A10CB468DBFC9AD16367F7DDF80BF">>},
+ {<<"ranch">>, <<"FA0B99A1780C80218A4197A59EA8D3BDAE32FBFF7E88527D7D8A4787EFF4F8E7">>}]}
 ].
