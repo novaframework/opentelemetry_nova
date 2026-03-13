@@ -19,37 +19,42 @@
         after 5000 ->
             ct:fail({timeout_waiting_for_metric, Name})
         end
-    end)()).
+    end)()
+).
 
 %%--------------------------------------------------------------------
 %% CT callbacks
 %%--------------------------------------------------------------------
 
 all() ->
-    [stream_handler_creates_span,
-     stream_handler_captures_status,
-     stream_handler_sets_error_on_5xx,
-     stream_handler_sets_error_type_on_5xx,
-     stream_handler_ends_span_on_auth_rejection,
-     stream_handler_protocol_version,
-     stream_handler_client_address_xff,
-     stream_handler_client_address_forwarded,
-     stream_handler_client_address_peer_fallback,
-     plugin_enriches_span,
-     plugin_sets_http_route,
-     plugin_sets_http_route_with_bindings,
-     trace_context_propagation,
-     metrics_request_duration,
-     metrics_request_duration_with_route,
-     metrics_error_type_in_metrics,
-     metrics_active_requests,
-     metrics_body_sizes].
+    [
+        stream_handler_creates_span,
+        stream_handler_captures_status,
+        stream_handler_sets_error_on_5xx,
+        stream_handler_sets_error_type_on_5xx,
+        stream_handler_ends_span_on_auth_rejection,
+        stream_handler_protocol_version,
+        stream_handler_client_address_xff,
+        stream_handler_client_address_forwarded,
+        stream_handler_client_address_peer_fallback,
+        plugin_enriches_span,
+        plugin_sets_http_route,
+        plugin_sets_http_route_with_bindings,
+        trace_context_propagation,
+        metrics_request_duration,
+        metrics_request_duration_with_route,
+        metrics_error_type_in_metrics,
+        metrics_active_requests,
+        metrics_body_sizes
+    ].
 
 init_per_suite(Config) ->
     application:ensure_all_started(opentelemetry),
     ok = application:set_env(opentelemetry_experimental, readers, [
-        #{module => otel_metric_reader,
-          config => #{exporter => {test_metric_exporter, []}}}
+        #{
+            module => otel_metric_reader,
+            config => #{exporter => {test_metric_exporter, []}}
+        }
     ]),
     application:ensure_all_started(opentelemetry_experimental),
     opentelemetry_nova:setup(),
@@ -418,28 +423,33 @@ make_req(Method, Path) ->
     make_req(Method, Path, #{}).
 
 make_req(Method, Path, ExtraHeaders) ->
-    BaseHeaders = #{<<"host">> => <<"localhost:8080">>,
-                    <<"user-agent">> => <<"test-agent/1.0">>},
+    BaseHeaders = #{
+        <<"host">> => <<"localhost:8080">>,
+        <<"user-agent">> => <<"test-agent/1.0">>
+    },
     Headers = maps:merge(BaseHeaders, ExtraHeaders),
-    #{method => Method,
-      path => Path,
-      scheme => <<"http">>,
-      host => <<"localhost">>,
-      port => 8080,
-      qs => <<>>,
-      version => 'HTTP/1.1',
-      headers => Headers,
-      peer => {{127, 0, 0, 1}, 12345},
-      cert => undefined,
-      pid => self(),
-      streamid => 1}.
+    #{
+        method => Method,
+        path => Path,
+        scheme => <<"http">>,
+        host => <<"localhost">>,
+        port => 8080,
+        qs => <<>>,
+        version => 'HTTP/1.1',
+        headers => Headers,
+        peer => {{127, 0, 0, 1}, 12345},
+        cert => undefined,
+        pid => self(),
+        streamid => 1
+    }.
 
 make_req_with_version(Method, Path, Version) ->
     Req = make_req(Method, Path),
     Req#{version => Version}.
 
 drain_spans() ->
-    receive {span, _} -> drain_spans()
+    receive
+        {span, _} -> drain_spans()
     after 100 -> ok
     end.
 

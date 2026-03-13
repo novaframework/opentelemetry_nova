@@ -13,17 +13,19 @@
 %%--------------------------------------------------------------------
 
 all() ->
-    [format_histogram,
-     format_counter,
-     format_gauge,
-     format_updown_counter,
-     label_dots_to_underscores,
-     label_escaping,
-     unit_suffix_seconds,
-     unit_suffix_bytes,
-     empty_metrics,
-     delta_accumulation,
-     http_endpoint].
+    [
+        format_histogram,
+        format_counter,
+        format_gauge,
+        format_updown_counter,
+        label_dots_to_underscores,
+        label_escaping,
+        unit_suffix_seconds,
+        unit_suffix_bytes,
+        empty_metrics,
+        delta_accumulation,
+        http_endpoint
+    ].
 
 init_per_suite(Config) ->
     Config.
@@ -79,13 +81,51 @@ format_histogram(_Config) ->
     otel_nova_prom_exporter:export(metrics, [Metric], undefined, #{}),
     Output = otel_nova_prom_exporter:get_metrics(),
 
-    ?assertMatch({match, _}, re:run(Output, <<"# TYPE http_server_request_duration_seconds histogram">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"0.01\"\\} 1">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"0.05\"\\} 2">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"0.1\"\\} 3">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"\\+Inf\"\\} 3">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_request_duration_seconds_sum\\{http_request_method=\"GET\"\\} 0.15">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_request_duration_seconds_count\\{http_request_method=\"GET\"\\} 3">>)),
+    ?assertMatch(
+        {match, _}, re:run(Output, <<"# TYPE http_server_request_duration_seconds histogram">>)
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Output,
+            <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"0.01\"\\} 1">>
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Output,
+            <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"0.05\"\\} 2">>
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Output,
+            <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"0.1\"\\} 3">>
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Output,
+            <<"http_server_request_duration_seconds_bucket\\{http_request_method=\"GET\",le=\"\\+Inf\"\\} 3">>
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Output,
+            <<"http_server_request_duration_seconds_sum\\{http_request_method=\"GET\"\\} 0.15">>
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            Output,
+            <<"http_server_request_duration_seconds_count\\{http_request_method=\"GET\"\\} 3">>
+        )
+    ),
     ok.
 
 format_counter(_Config) ->
@@ -112,7 +152,10 @@ format_counter(_Config) ->
     Output = otel_nova_prom_exporter:get_metrics(),
 
     ?assertMatch({match, _}, re:run(Output, <<"# TYPE http_server_requests_total counter">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_requests_total\\{http_request_method=\"GET\"\\} 42">>)),
+    ?assertMatch(
+        {match, _},
+        re:run(Output, <<"http_server_requests_total\\{http_request_method=\"GET\"\\} 42">>)
+    ),
     ok.
 
 format_gauge(_Config) ->
@@ -164,7 +207,10 @@ format_updown_counter(_Config) ->
     Output = otel_nova_prom_exporter:get_metrics(),
 
     ?assertMatch({match, _}, re:run(Output, <<"# TYPE http_server_active_requests gauge">>)),
-    ?assertMatch({match, _}, re:run(Output, <<"http_server_active_requests\\{http_request_method=\"GET\"\\} 5">>)),
+    ?assertMatch(
+        {match, _},
+        re:run(Output, <<"http_server_active_requests\\{http_request_method=\"GET\"\\} 5">>)
+    ),
     ok.
 
 label_dots_to_underscores(_Config) ->
@@ -284,9 +330,14 @@ delta_accumulation(_Config) ->
         unit = undefined,
         data = #sum{
             datapoints = [
-                #datapoint{attributes = #{key => <<"a">>},
-                           start_time = 0, time = 1000,
-                           value = 10, exemplars = [], flags = 0}
+                #datapoint{
+                    attributes = #{key => <<"a">>},
+                    start_time = 0,
+                    time = 1000,
+                    value = 10,
+                    exemplars = [],
+                    flags = 0
+                }
             ],
             aggregation_temporality = temporality_delta,
             is_monotonic = true
@@ -301,9 +352,14 @@ delta_accumulation(_Config) ->
         unit = undefined,
         data = #sum{
             datapoints = [
-                #datapoint{attributes = #{key => <<"a">>},
-                           start_time = 1000, time = 2000,
-                           value = 7, exemplars = [], flags = 0}
+                #datapoint{
+                    attributes = #{key => <<"a">>},
+                    start_time = 1000,
+                    time = 2000,
+                    value = 7,
+                    exemplars = [],
+                    flags = 0
+                }
             ],
             aggregation_temporality = temporality_delta,
             is_monotonic = true

@@ -34,7 +34,8 @@ shutdown() ->
 
 get_metrics() ->
     case ets:info(?TABLE) of
-        undefined -> <<>>;
+        undefined ->
+            <<>>;
         _ ->
             case ets:lookup(?TABLE, metrics_output) of
                 [{metrics_output, Output}] -> Output;
@@ -62,16 +63,20 @@ accumulate_data(PromName, #sum{datapoints = Datapoints, is_monotonic = false}) -
 accumulate_data(PromName, #gauge{datapoints = Datapoints}) ->
     lists:foreach(fun(DP) -> store_gauge(PromName, DP) end, Datapoints).
 
-accumulate_histogram(PromName, #histogram_datapoint{attributes = Attrs,
-                                                     count = Count,
-                                                     sum = Sum,
-                                                     bucket_counts = BucketCounts,
-                                                     explicit_bounds = Bounds}) ->
+accumulate_histogram(PromName, #histogram_datapoint{
+    attributes = Attrs,
+    count = Count,
+    sum = Sum,
+    bucket_counts = BucketCounts,
+    explicit_bounds = Bounds
+}) ->
     Key = {dp, PromName, normalize_attrs(Attrs)},
     case ets:lookup(?TABLE, Key) of
         [{Key, {hist, PrevCount, PrevSum, PrevBuckets, B}}] ->
             NewBuckets = add_lists(PrevBuckets, BucketCounts),
-            ets:insert(?TABLE, {Key, {hist, PrevCount + Count, add_num(PrevSum, Sum), NewBuckets, B}});
+            ets:insert(
+                ?TABLE, {Key, {hist, PrevCount + Count, add_num(PrevSum, Sum), NewBuckets, B}}
+            );
         [] ->
             ets:insert(?TABLE, {Key, {hist, Count, Sum, BucketCounts, Bounds}})
     end.
@@ -108,21 +113,35 @@ metric_meta(PromName) -> {meta, PromName}.
 
 render_all() ->
     Metas = ets:match(?TABLE, {{meta, '$1'}, '$2', '$3', '_', '_'}),
-    Lines = lists:flatmap(fun([PromName, Desc, Type]) ->
-        render_metric(PromName, Desc, Type)
-    end, lists:sort(Metas)),
+    Lines = lists:flatmap(
+        fun([PromName, Desc, Type]) ->
+            render_metric(PromName, Desc, Type)
+        end,
+        lists:sort(Metas)
+    ),
     iolist_to_binary(Lines).
 
 render_metric(PromName, Desc, Type) ->
     Header = [
-        <<"# HELP ">>, PromName, <<" ">>, to_bin(Desc), <<"\n">>,
-        <<"# TYPE ">>, PromName, <<" ">>, Type, <<"\n">>
+        <<"# HELP ">>,
+        PromName,
+        <<" ">>,
+        to_bin(Desc),
+        <<"\n">>,
+        <<"# TYPE ">>,
+        PromName,
+        <<" ">>,
+        Type,
+        <<"\n">>
     ],
     DPs = ets:match(?TABLE, {{dp, PromName, '$1'}, '$2'}),
-    Body = lists:flatmap(fun([AttrList, Data]) ->
-        Attrs = maps:from_list(AttrList),
-        render_datapoint(PromName, Attrs, Data)
-    end, lists:sort(DPs)),
+    Body = lists:flatmap(
+        fun([AttrList, Data]) ->
+            Attrs = maps:from_list(AttrList),
+            render_datapoint(PromName, Attrs, Data)
+        end,
+        lists:sort(DPs)
+    ),
     case Body of
         [] -> Header;
         _ -> Header ++ Body
@@ -147,11 +166,20 @@ format_buckets(Name, Labels, BucketCounts, Bounds) ->
 format_buckets(Name, Labels, [Count | RestCounts], [Bound | RestBounds], Cumulative, Acc) ->
     CumCount = Cumulative + Count,
     Le = format_number(Bound),
-    Line = [Name, <<"_bucket">>, insert_le_label(Labels, Le), <<" ">>, format_number(CumCount), <<"\n">>],
+    Line = [
+        Name, <<"_bucket">>, insert_le_label(Labels, Le), <<" ">>, format_number(CumCount), <<"\n">>
+    ],
     format_buckets(Name, Labels, RestCounts, RestBounds, CumCount, Acc ++ [Line]);
 format_buckets(Name, Labels, [Count | _], [], Cumulative, Acc) ->
     CumCount = Cumulative + Count,
-    Line = [Name, <<"_bucket">>, insert_le_label(Labels, <<"+Inf">>), <<" ">>, format_number(CumCount), <<"\n">>],
+    Line = [
+        Name,
+        <<"_bucket">>,
+        insert_le_label(Labels, <<"+Inf">>),
+        <<" ">>,
+        format_number(CumCount),
+        <<"\n">>
+    ],
     Acc ++ [Line];
 format_buckets(_Name, _Labels, [], _, _Cumulative, Acc) ->
     Acc.
@@ -163,12 +191,16 @@ format_buckets(_Name, _Labels, [], _, _Cumulative, Acc) ->
 format_labels(Attrs) when map_size(Attrs) =:= 0 ->
     <<>>;
 format_labels(Attrs) ->
-    Pairs = lists:sort(maps:fold(fun(K, V, Acc) ->
-        [{prom_label_name(K), prom_label_value(V)} | Acc]
-    end, [], Attrs)),
-    Inner = lists:join(<<",">>, [
-        [LK, <<"=\"">>, LV, <<"\"">>] || {LK, LV} <- Pairs
-    ]),
+    Pairs = lists:sort(
+        maps:fold(
+            fun(K, V, Acc) ->
+                [{prom_label_name(K), prom_label_value(V)} | Acc]
+            end,
+            [],
+            Attrs
+        )
+    ),
+    Inner = lists:join(<<",">>, [[LK, <<"=\"">>, LV, <<"\"">>] || {LK, LV} <- Pairs]),
     [<<"{">>, Inner, <<"}">>].
 
 insert_le_label(<<>>, Le) ->
@@ -187,8 +219,10 @@ prom_metric_name(Name, Unit, Data) ->
     WithUnit = maybe_append_unit(Base, Unit),
     maybe_append_total(WithUnit, Data).
 
-maybe_append_unit(Base, undefined) -> Base;
-maybe_append_unit(Base, '') -> Base;
+maybe_append_unit(Base, undefined) ->
+    Base;
+maybe_append_unit(Base, '') ->
+    Base;
 maybe_append_unit(Base, s) ->
     append_if_missing(Base, <<"_seconds">>);
 maybe_append_unit(Base, 'By') ->
@@ -242,8 +276,14 @@ escape_label_value(Bin) ->
     binary:replace(
         binary:replace(
             binary:replace(Bin, <<"\\">>, <<"\\\\">>, [global]),
-            <<"\"">>, <<"\\\"">>, [global]),
-        <<"\n">>, <<"\\n">>, [global]).
+            <<"\"">>,
+            <<"\\\"">>,
+            [global]
+        ),
+        <<"\n">>,
+        <<"\\n">>,
+        [global]
+    ).
 
 dots_to_underscores(Bin) ->
     binary:replace(Bin, <<".">>, <<"_">>, [global]).

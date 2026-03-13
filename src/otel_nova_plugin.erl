@@ -42,13 +42,20 @@ plugin_info() ->
 
 reconstruct_route(#{bindings := Bindings, path := Path}) when map_size(Bindings) > 0 ->
     Segments = binary:split(Path, <<"/">>, [global]),
-    InverseBindings = maps:fold(fun(K, V, Acc) ->
-        Acc#{V => K}
-    end, #{}, Bindings),
-    Replaced = [case maps:find(Seg, InverseBindings) of
-        {ok, Key} -> <<":", Key/binary>>;
-        error -> Seg
-    end || Seg <- Segments],
+    InverseBindings = maps:fold(
+        fun(K, V, Acc) ->
+            Acc#{V => K}
+        end,
+        #{},
+        Bindings
+    ),
+    Replaced = [
+        case maps:find(Seg, InverseBindings) of
+            {ok, Key} -> <<":", Key/binary>>;
+            error -> Seg
+        end
+     || Seg <- Segments
+    ],
     iolist_to_binary(lists:join(<<"/">>, Replaced));
 reconstruct_route(#{path := Path}) ->
     Path.

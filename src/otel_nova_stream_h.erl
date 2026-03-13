@@ -41,13 +41,15 @@ init(StreamID, Req, Opts) ->
     ?updown_counter_add('http.server.active_requests', 1, MetricAttrs),
 
     {Commands, Next} = cowboy_stream:init(StreamID, Req, Opts),
-    {Commands, #state{next = Next,
-                      span_ctx = SpanCtx,
-                      otel_ctx = OtelCtx,
-                      req_start = erlang:monotonic_time(),
-                      req_body_length = 0,
-                      resp_body_length = 0,
-                      metric_attrs = MetricAttrs}}.
+    {Commands, #state{
+        next = Next,
+        span_ctx = SpanCtx,
+        otel_ctx = OtelCtx,
+        req_start = erlang:monotonic_time(),
+        req_body_length = 0,
+        resp_body_length = 0,
+        metric_attrs = MetricAttrs
+    }}.
 
 -spec data(cowboy_stream:streamid(), cowboy_stream:fin(), cowboy_req:resp_body(), #state{}) ->
     {cowboy_stream:commands(), #state{}}.
@@ -57,30 +59,44 @@ data(StreamID, IsFin, Data, State = #state{next = Next, req_body_length = Acc}) 
 
 -spec info(cowboy_stream:streamid(), any(), #state{}) ->
     {cowboy_stream:commands(), #state{}}.
-info(StreamID, {response, Code, _Headers, Body} = Info, State = #state{next = Next})
-  when is_integer(Code) ->
+info(StreamID, {response, Code, _Headers, Body} = Info, State = #state{next = Next}) when
+    is_integer(Code)
+->
     {Commands, Next0} = cowboy_stream:info(StreamID, Info, Next),
-    {Commands, State#state{next = Next0, status_code = Code,
-                           resp_body_length = iolist_size(Body)}};
-info(StreamID, {headers, Code, _Headers} = Info, State = #state{next = Next})
-  when is_integer(Code) ->
+    {Commands, State#state{
+        next = Next0,
+        status_code = Code,
+        resp_body_length = iolist_size(Body)
+    }};
+info(StreamID, {headers, Code, _Headers} = Info, State = #state{next = Next}) when
+    is_integer(Code)
+->
     {Commands, Next0} = cowboy_stream:info(StreamID, Info, Next),
     {Commands, State#state{next = Next0, status_code = Code}};
-info(StreamID, {error_response, Code, _Headers, Body} = Info, State = #state{next = Next})
-  when is_integer(Code) ->
+info(StreamID, {error_response, Code, _Headers, Body} = Info, State = #state{next = Next}) when
+    is_integer(Code)
+->
     {Commands, Next0} = cowboy_stream:info(StreamID, Info, Next),
-    {Commands, State#state{next = Next0, status_code = Code,
-                           resp_body_length = iolist_size(Body)}};
+    {Commands, State#state{
+        next = Next0,
+        status_code = Code,
+        resp_body_length = iolist_size(Body)
+    }};
 info(StreamID, Info, State = #state{next = Next}) ->
     {Commands, Next0} = cowboy_stream:info(StreamID, Info, Next),
     {Commands, State#state{next = Next0}}.
 
 -spec terminate(cowboy_stream:streamid(), cowboy_stream:reason(), #state{}) -> any().
-terminate(StreamID, Reason, #state{next = Next, span_ctx = SpanCtx, otel_ctx = OtelCtx,
-                                    status_code = StatusCode, req_start = ReqStart,
-                                    req_body_length = ReqBodyLen,
-                                    resp_body_length = RespBodyLen,
-                                    metric_attrs = MetricAttrs}) ->
+terminate(StreamID, Reason, #state{
+    next = Next,
+    span_ctx = SpanCtx,
+    otel_ctx = OtelCtx,
+    status_code = StatusCode,
+    req_start = ReqStart,
+    req_body_length = ReqBodyLen,
+    resp_body_length = RespBodyLen,
+    metric_attrs = MetricAttrs
+}) ->
     otel_ctx:attach(OtelCtx),
     ?set_current_span(SpanCtx),
 
@@ -99,20 +115,24 @@ terminate(StreamID, Reason, #state{next = Next, span_ctx = SpanCtx, otel_ctx = O
     %% Record metrics
     EndTime = erlang:monotonic_time(),
     Duration = erlang:convert_time_unit(EndTime - ReqStart, native, millisecond) / 1000,
-    RouteAttrs = case erlang:erase(?OTEL_NOVA_HTTP_ROUTE) of
-        undefined -> #{};
-        Route -> #{'http.route' => Route}
-    end,
+    RouteAttrs =
+        case erlang:erase(?OTEL_NOVA_HTTP_ROUTE) of
+            undefined -> #{};
+            Route -> #{'http.route' => Route}
+        end,
     FinalAttrs0 = maps:merge(MetricAttrs, RouteAttrs),
-    FinalAttrs = case StatusCode of
-        undefined -> FinalAttrs0;
-        SC ->
-            ErrorAttrs = case SC >= 500 of
-                true -> #{'error.type' => integer_to_binary(SC)};
-                false -> #{}
-            end,
-            maps:merge(FinalAttrs0#{'http.response.status_code' => SC}, ErrorAttrs)
-    end,
+    FinalAttrs =
+        case StatusCode of
+            undefined ->
+                FinalAttrs0;
+            SC ->
+                ErrorAttrs =
+                    case SC >= 500 of
+                        true -> #{'error.type' => integer_to_binary(SC)};
+                        false -> #{}
+                    end,
+                maps:merge(FinalAttrs0#{'http.response.status_code' => SC}, ErrorAttrs)
+        end,
     ?histogram_record('http.server.request.duration', Duration, FinalAttrs),
     record_if_positive('http.server.request.body.size', ReqBodyLen, FinalAttrs),
     record_if_positive('http.server.response.body.size', RespBodyLen, FinalAttrs),
@@ -120,9 +140,14 @@ terminate(StreamID, Reason, #state{next = Next, span_ctx = SpanCtx, otel_ctx = O
 
     cowboy_stream:terminate(StreamID, Reason, Next).
 
--spec early_error(cowboy_stream:streamid(), cowboy_stream:reason(),
-                  cowboy_stream:partial_req(), Resp, cowboy:opts()) -> Resp
-    when Resp :: cowboy_stream:resp_command().
+-spec early_error(
+    cowboy_stream:streamid(),
+    cowboy_stream:reason(),
+    cowboy_stream:partial_req(),
+    Resp,
+    cowboy:opts()
+) -> Resp when
+    Resp :: cowboy_stream:resp_command().
 early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
     cowboy_stream:early_error(StreamID, Reason, PartialReq, Resp, Opts).
 
@@ -149,10 +174,11 @@ request_attributes(Req) ->
         'client.address' => client_address(Req, PeerBin)
     },
 
-    Attrs1 = case cowboy_req:header(<<"user-agent">>, Req) of
-        undefined -> Attrs0;
-        UA -> Attrs0#{'user_agent.original' => UA}
-    end,
+    Attrs1 =
+        case cowboy_req:header(<<"user-agent">>, Req) of
+            undefined -> Attrs0;
+            UA -> Attrs0#{'user_agent.original' => UA}
+        end,
     Attrs1.
 
 metric_attributes(Req) ->
@@ -195,8 +221,13 @@ client_address(Req, PeerBin) ->
     end.
 
 parse_forwarded_for(Forwarded, Default) ->
-    case re:run(Forwarded, <<"for=\"?([^;,\"]+)\"?">>,
-                [{capture, [1], binary}, caseless]) of
+    case
+        re:run(
+            Forwarded,
+            <<"for=\"?([^;,\"]+)\"?">>,
+            [{capture, [1], binary}, caseless]
+        )
+    of
         {match, [Addr]} -> string:trim(Addr);
         nomatch -> Default
     end.
