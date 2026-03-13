@@ -1,2 +1,5 @@
 # style: format codebase with erlfmt
-a379bbc
+a379bbccea27e5e26609285d2814a80cfe07c26a
+
+# style: actually apply erlfmt formatting
+b2b20262972eb9b20f848fbb68f4b9eb9959ef40
