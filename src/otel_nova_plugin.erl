@@ -1,5 +1,6 @@
 -module(otel_nova_plugin).
--behaviour(nova_plugin).
+%% Implements nova_plugin behaviour callbacks.
+%% The -behaviour directive is omitted because nova is only a test dependency.
 
 -export([pre_request/4, post_request/4, plugin_info/0]).
 
@@ -7,18 +8,19 @@
 
 pre_request(Req, Env, _Opts, State) ->
     Method = cowboy_req:method(Req),
+    Route = reconstruct_route(Req),
+
+    ?set_attribute('http.route', Route),
+    erlang:put(otel_nova_http_route, Route),
+    ?update_name(<<Method/binary, " ", Route/binary>>),
 
     case extract_callback_info(Env) of
         {App, Controller, Action} ->
-            ControllerBin = atom_to_binary(Controller, utf8),
-            ActionBin = atom_to_binary(Action, utf8),
             ?set_attributes(#{
                 'nova.app' => atom_to_binary(App, utf8),
-                'nova.controller' => ControllerBin,
-                'nova.action' => ActionBin
-            }),
-            SpanName = <<Method/binary, " ", ControllerBin/binary, ":", ActionBin/binary>>,
-            ?update_name(SpanName);
+                'nova.controller' => atom_to_binary(Controller, utf8),
+                'nova.action' => atom_to_binary(Action, utf8)
+            });
         undefined ->
             ok
     end,
@@ -37,6 +39,26 @@ plugin_info() ->
     }.
 
 %% Internal
+
+reconstruct_route(#{bindings := Bindings, path := Path}) when map_size(Bindings) > 0 ->
+    Segments = binary:split(Path, <<"/">>, [global]),
+    InverseBindings = maps:fold(
+        fun(K, V, Acc) ->
+            Acc#{V => K}
+        end,
+        #{},
+        Bindings
+    ),
+    Replaced = [
+        case maps:find(Seg, InverseBindings) of
+            {ok, Key} -> <<":", Key/binary>>;
+            error -> Seg
+        end
+     || Seg <- Segments
+    ],
+    iolist_to_binary(lists:join(<<"/">>, Replaced));
+reconstruct_route(#{path := Path}) ->
+    Path.
 
 extract_callback_info(#{app := App, callback := Fun}) when is_function(Fun) ->
     case {erlang:fun_info(Fun, module), erlang:fun_info(Fun, name)} of
