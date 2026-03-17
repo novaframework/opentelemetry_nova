@@ -9,11 +9,12 @@
 
 %% OTel macros expand to pattern matches that dialyzer flags as unreachable.
 -dialyzer({no_match, [init/3, terminate/3, record_if_positive/3]}).
+-dialyzer({no_opaque, [init/3, terminate/3]}).
 
 -record(state, {
     next :: any(),
     span_ctx :: opentelemetry:span_ctx() | undefined,
-    otel_ctx :: otel_ctx:t() | undefined,
+    prev_ctx_token :: otel_ctx:token() | undefined,
     status_code :: integer() | undefined,
     req_start :: integer(),
     req_body_length :: non_neg_integer(),
@@ -27,7 +28,7 @@
     {cowboy_stream:commands(), #state{}}.
 init(StreamID, Req, Opts) ->
     Headers = cowboy_req:headers(Req),
-    otel_propagator_text_map:extract(maps:to_list(Headers)),
+    PrevCtxToken = otel_propagator_text_map:extract(maps:to_list(Headers)),
 
     Method = cowboy_req:method(Req),
     SpanName = <<"HTTP ", Method/binary>>,
@@ -35,7 +36,6 @@ init(StreamID, Req, Opts) ->
 
     SpanCtx = ?start_span(SpanName, #{kind => ?SPAN_KIND_SERVER, attributes => Attrs}),
     ?set_current_span(SpanCtx),
-    OtelCtx = otel_ctx:get_current(),
 
     MetricAttrs = metric_attributes(Req),
     ?updown_counter_add('http.server.active_requests', 1, MetricAttrs),
@@ -44,7 +44,7 @@ init(StreamID, Req, Opts) ->
     {Commands, #state{
         next = Next,
         span_ctx = SpanCtx,
-        otel_ctx = OtelCtx,
+        prev_ctx_token = PrevCtxToken,
         req_start = erlang:monotonic_time(),
         req_body_length = 0,
         resp_body_length = 0,
@@ -90,14 +90,13 @@ info(StreamID, Info, State = #state{next = Next}) ->
 terminate(StreamID, Reason, #state{
     next = Next,
     span_ctx = SpanCtx,
-    otel_ctx = OtelCtx,
+    prev_ctx_token = PrevCtxToken,
     status_code = StatusCode,
     req_start = ReqStart,
     req_body_length = ReqBodyLen,
     resp_body_length = RespBodyLen,
     metric_attrs = MetricAttrs
 }) ->
-    otel_ctx:attach(OtelCtx),
     ?set_current_span(SpanCtx),
 
     case StatusCode of
@@ -110,7 +109,7 @@ terminate(StreamID, Reason, #state{
     end,
 
     ?end_span(),
-    otel_ctx:clear(),
+    otel_ctx:detach(PrevCtxToken),
 
     %% Record metrics
     EndTime = erlang:monotonic_time(),
