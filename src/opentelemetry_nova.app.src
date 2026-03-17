@@ -2,7 +2,9 @@
     {description, "OpenTelemetry instrumentation for the Nova web framework"},
     {vsn, git},
     {registered, []},
-    {applications, [kernel, stdlib, opentelemetry_api, opentelemetry_api_experimental]},
+    {applications, [
+        kernel, stdlib, opentelemetry, opentelemetry_api, opentelemetry_api_experimental
+    ]},
     {env, []},
     {modules, []},
     {licenses, ["MIT"]},

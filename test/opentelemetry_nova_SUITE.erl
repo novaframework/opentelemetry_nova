@@ -40,6 +40,7 @@ all() ->
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
+        stream_handler_restores_context_on_terminate,
         trace_context_propagation,
         metrics_request_duration,
         metrics_request_duration_with_route,
@@ -214,6 +215,25 @@ stream_handler_ends_span_on_auth_rejection(_Config) ->
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+stream_handler_restores_context_on_terminate(_Config) ->
+    %% Set up a pre-existing context value before the stream handler runs
+    otel_ctx:set_value(test_key, test_value),
+
+    Req = make_req(<<"GET">>, <<"/test">>),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+
+    %% After terminate, the previous context should be restored (not cleared)
+    ?assertEqual(test_value, otel_ctx:get_value(test_key, undefined)),
+
+    receive
+        {span, #span{}} -> ok
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end,
+    otel_ctx:clear().
 
 %%--------------------------------------------------------------------
 %% Plugin tests
