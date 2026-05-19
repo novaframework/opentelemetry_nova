@@ -24,6 +24,7 @@ pre_request(Req, Env, _Opts, State) ->
         undefined ->
             ok
     end,
+    enrich_logger_metadata(?current_span_ctx),
     {ok, Req, State}.
 
 post_request(Req, _Env, _Opts, State) ->
@@ -39,6 +40,17 @@ plugin_info() ->
     }.
 
 %% Internal
+
+enrich_logger_metadata(SpanCtx) ->
+    case otel_span:is_valid(SpanCtx) of
+        true ->
+            logger:update_process_metadata(#{
+                trace_id => otel_span:hex_trace_id(SpanCtx),
+                span_id => otel_span:hex_span_id(SpanCtx)
+            });
+        false ->
+            ok
+    end.
 
 reconstruct_route(#{bindings := Bindings, path := Path}) when map_size(Bindings) > 0 ->
     Segments = binary:split(Path, <<"/">>, [global]),

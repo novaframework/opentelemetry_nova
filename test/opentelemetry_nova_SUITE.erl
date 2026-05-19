@@ -40,6 +40,8 @@ all() ->
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
+        plugin_sets_logger_metadata_with_trace_ids,
+        plugin_skips_logger_metadata_without_valid_span,
         stream_handler_restores_context_on_terminate,
         trace_context_propagation,
         metrics_request_duration,
@@ -299,6 +301,45 @@ plugin_sets_http_route_with_bindings(_Config) ->
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+plugin_sets_logger_metadata_with_trace_ids(_Config) ->
+    logger:unset_process_metadata(),
+    Req = make_req(<<"GET">>, <<"/users">>),
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+
+    Env = #{app => my_app, callback => fun fake_controller:index/1},
+    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+
+    Meta = logger:get_process_metadata(),
+    ?assert(is_map(Meta)),
+    TraceId = maps:get(trace_id, Meta, undefined),
+    SpanId = maps:get(span_id, Meta, undefined),
+    ?assert(is_binary(TraceId)),
+    ?assert(is_binary(SpanId)),
+    ?assertEqual(32, byte_size(TraceId)),
+    ?assertEqual(16, byte_size(SpanId)),
+
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    drain_spans(),
+    logger:unset_process_metadata().
+
+plugin_skips_logger_metadata_without_valid_span(_Config) ->
+    logger:unset_process_metadata(),
+    otel_ctx:clear(),
+
+    Req = make_req(<<"GET">>, <<"/no-span">>),
+    Env = #{app => my_app, callback => fun fake_controller:index/1},
+    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+
+    Meta =
+        case logger:get_process_metadata() of
+            undefined -> #{};
+            M -> M
+        end,
+    ?assertNot(maps:is_key(trace_id, Meta)),
+    ?assertNot(maps:is_key(span_id, Meta)),
+    logger:unset_process_metadata().
 
 %%--------------------------------------------------------------------
 %% Trace context propagation
