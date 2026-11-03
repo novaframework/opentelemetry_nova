@@ -11,6 +11,8 @@ execute(Req = #{path := Path}, Env) ->
         {ok, Bindings, static, PathInfo} ->
             Req1 = Req#{bindings => Bindings, extra_state => #{pathinfo => PathInfo}},
             {ok, Req1#{plugins => Plugins}, Env1};
+        _ when Path =:= ~"/plugin_crash" ->
+            {ok, Req#{plugins => Plugins}, Env1#{app => ~"not_an_atom"}};
         _ ->
             {ok, Req#{plugins => Plugins}, Env1}
     end.

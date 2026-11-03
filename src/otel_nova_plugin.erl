@@ -13,7 +13,8 @@ reports the route to the stream handler for the HTTP metrics.
 `http.route` is the route template: bound segments become `:name` and the
 tail matched by a catch-all such as `/assets/[...]` becomes `[...]`. When the
 template cannot be determined the attribute is left out rather than set to
-the raw path, so the number of metric series stays bounded.
+the raw path, so the number of metric series stays bounded. Instrumentation
+failures are logged without request data and never fail the request.
 """.
 %% Implements nova_plugin behaviour callbacks.
 %% The -behaviour directive is omitted because nova is only a test dependency.
@@ -23,7 +24,12 @@ the raw path, so the number of metric series stays bounded.
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
 
 pre_request(Req, Env, _Opts, State) ->
-    instrument(Req, Env),
+    try
+        instrument(Req, Env)
+    catch
+        Class:Reason:Stacktrace ->
+            otel_nova_stream_h:log_failure(pre_request, Class, Reason, Stacktrace)
+    end,
     {ok, Req, State}.
 
 post_request(Req, _Env, _Opts, State) ->

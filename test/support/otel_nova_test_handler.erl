@@ -10,5 +10,7 @@ execute(Req = #{path := ~"/child"}, _Env) ->
     {stop, cowboy_req:reply(200, #{}, ~"ok", Req)};
 execute(Req = #{path := ~"/static"}, #{static_file := {Path, Size}}) ->
     {stop, cowboy_req:reply(200, #{}, {sendfile, 0, Size, Path}, Req)};
+execute(Req = #{path := ~"/plugin_crash"}, _Env) ->
+    {stop, cowboy_req:reply(200, #{}, ~"ok", Req)};
 execute(Req = #{path := <<"/assets/", _/binary>>}, _Env) ->
     {stop, cowboy_req:reply(404, #{}, ~"not found", Req)}.

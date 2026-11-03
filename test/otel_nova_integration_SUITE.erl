@@ -12,7 +12,8 @@
     active_requests_gauge_tracks_in_flight_requests/1,
     supervised_prom_server_stops_listener_with_app/1,
     setup_prom_server_survives_app_restart/1,
-    catch_all_paths_share_one_route_series/1
+    catch_all_paths_share_one_route_series/1,
+    plugin_failure_does_not_fail_the_request/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -34,7 +35,8 @@ all() ->
         active_requests_gauge_tracks_in_flight_requests,
         supervised_prom_server_stops_listener_with_app,
         setup_prom_server_survives_app_restart,
-        catch_all_paths_share_one_route_series
+        catch_all_paths_share_one_route_series,
+        plugin_failure_does_not_fail_the_request
     ].
 
 init_per_suite(Config) ->
@@ -66,7 +68,8 @@ end_per_suite(Config) ->
 
 init_per_testcase(TestCase, Config) when
     TestCase =:= sendfile_response_logs_no_request_data;
-    TestCase =:= instrumentation_failure_logs_no_request_data
+    TestCase =:= instrumentation_failure_logs_no_request_data;
+    TestCase =:= plugin_failure_does_not_fail_the_request
 ->
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => #{pid => self()}}),
     init_per_testcase(default, Config);
@@ -207,6 +210,19 @@ catch_all_paths_share_one_route_series(_Config) ->
         [global]
     ),
     ?assertMatch({match, [_]}, Series).
+
+plugin_failure_does_not_fail_the_request(_Config) ->
+    {200, ~"ok"} = get("/plugin_crash", [{"cookie", ?COOKIE}]),
+    _ = receive_spans(1),
+    receive
+        {log_event, #{
+            msg := {report, #{what := otel_nova_instrumentation_failed, callback := pre_request}}
+        }} ->
+            ok
+    after 1000 ->
+        ct:fail(no_instrumentation_warning)
+    end,
+    assert_no_log_mentions("s3cr3t").
 
 %%--------------------------------------------------------------------
 %% Helpers

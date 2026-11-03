@@ -15,6 +15,7 @@ stream.
 -behavior(cowboy_stream).
 
 -export([init/3, data/4, info/3, terminate/3, early_error/5]).
+-export([log_failure/4]).
 
 -include_lib("kernel/include/logger.hrl").
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
@@ -167,15 +168,19 @@ safely(Callback, Fun, Default) ->
         Fun()
     catch
         Class:Reason:Stacktrace ->
-            ?LOG_WARNING(#{
-                what => otel_nova_instrumentation_failed,
-                callback => Callback,
-                class => Class,
-                reason => reason_tag(Reason),
-                stacktrace => [strip_args(Frame) || Frame <- Stacktrace]
-            }),
+            log_failure(Callback, Class, Reason, Stacktrace),
             Default
     end.
+
+-doc false.
+log_failure(Callback, Class, Reason, Stacktrace) ->
+    ?LOG_WARNING(#{
+        what => otel_nova_instrumentation_failed,
+        callback => Callback,
+        class => Class,
+        reason => reason_tag(Reason),
+        stacktrace => [strip_args(Frame) || Frame <- Stacktrace]
+    }).
 
 reason_tag(Reason) when is_atom(Reason) -> Reason;
 reason_tag(Reason) when is_tuple(Reason), is_atom(element(1, Reason)) -> element(1, Reason);
