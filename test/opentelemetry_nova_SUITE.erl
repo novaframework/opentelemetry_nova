@@ -40,6 +40,9 @@ all() ->
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
+        plugin_folds_catch_all_tail_into_route,
+        plugin_canonicalises_route,
+        plugin_omits_undeterminable_route,
         plugin_sets_logger_metadata_with_trace_ids,
         plugin_skips_logger_metadata_without_valid_span,
         stream_handler_restores_context_on_terminate,
@@ -302,6 +305,23 @@ plugin_sets_http_route_with_bindings(_Config) ->
         ct:fail(timeout_waiting_for_span)
     end.
 
+plugin_folds_catch_all_tail_into_route(_Config) ->
+    Req0 = make_req(<<"GET">>, <<"/users/42/files/a/b.txt">>),
+    Req = Req0#{
+        bindings => #{<<"id">> => <<"42">>},
+        extra_state => #{pathinfo => [<<"a">>, <<"b.txt">>]}
+    },
+    ?assertEqual(<<"/users/:id/files/[...]">>, plugin_route(Req, #{})).
+
+plugin_canonicalises_route(_Config) ->
+    Req = make_req(<<"GET">>, <<"//./api/x/../health/">>),
+    ?assertEqual(<<"/api/health">>, plugin_route(Req, #{})).
+
+plugin_omits_undeterminable_route(_Config) ->
+    Req0 = make_req(<<"GET">>, <<"/assets/app.css">>),
+    Req = Req0#{extra_state => #{pathinfo => [<<"other.css">>]}},
+    ?assertEqual(undefined, plugin_route(Req, #{})).
+
 plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     logger:unset_process_metadata(),
     Req = make_req(<<"GET">>, <<"/users">>),
@@ -491,6 +511,26 @@ start_stream(StreamID, Req) ->
 run_plugin(Req, Env, State) ->
     {ok, _Req, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
     forward_casts(1, State).
+
+plugin_route(Req, Env) ->
+    {State0, DownReq} = start_stream(1, Req),
+    State = run_plugin(DownReq, Env, State0),
+    {_Cmds, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    receive
+        {span, Span} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            Route = maps:get('http.route', Attrs, undefined),
+            Expected =
+                case Route of
+                    undefined -> <<"HTTP GET">>;
+                    _ -> <<"GET ", Route/binary>>
+                end,
+            ?assertEqual(Expected, Span#span.name),
+            Route
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
 
 forward_casts(StreamID, State0) ->
     receive

@@ -11,7 +11,8 @@
     prometheus_endpoint_serves_recorded_metrics/1,
     active_requests_gauge_tracks_in_flight_requests/1,
     supervised_prom_server_stops_listener_with_app/1,
-    setup_prom_server_survives_app_restart/1
+    setup_prom_server_survives_app_restart/1,
+    catch_all_paths_share_one_route_series/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -32,7 +33,8 @@ all() ->
         prometheus_endpoint_serves_recorded_metrics,
         active_requests_gauge_tracks_in_flight_requests,
         supervised_prom_server_stops_listener_with_app,
-        setup_prom_server_survives_app_restart
+        setup_prom_server_survives_app_restart,
+        catch_all_paths_share_one_route_series
     ].
 
 init_per_suite(Config) ->
@@ -189,6 +191,22 @@ setup_prom_server_survives_app_restart(_Config) ->
     ok = application:stop(otel_nova_test_app),
     {ok, _} = application:ensure_all_started(otel_nova_test_app),
     {200, _} = request(?METRICS_PORT, "/metrics", []).
+
+catch_all_paths_share_one_route_series(_Config) ->
+    [
+        {404, _} = get("/assets/missing-" ++ integer_to_list(N) ++ ".css", [])
+     || N <- lists:seq(1, 100)
+    ],
+    _ = receive_spans(100),
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{[^}]*http_route=\"/assets/\\[\\.\\.\\.\\]\"[^}]*\\} 100"
+    ),
+    Series = re:run(
+        otel_nova_prom_exporter:get_metrics(),
+        ~"http_server_request_duration_seconds_count\\{[^}]*http_route=\"/assets",
+        [global]
+    ),
+    ?assertMatch({match, [_]}, Series).
 
 %%--------------------------------------------------------------------
 %% Helpers
