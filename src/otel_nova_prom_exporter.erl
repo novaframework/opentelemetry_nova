@@ -23,6 +23,7 @@ Implements the exporter API of both opentelemetry_experimental 0.6
 -export([init/1, export/3, export/4, force_flush/0, shutdown/0, shutdown/1]).
 -export([get_metrics/0]).
 
+-include_lib("kernel/include/logger.hrl").
 -include_lib("opentelemetry_api_experimental/include/otel_metrics.hrl").
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
 
@@ -31,13 +32,20 @@ Implements the exporter API of both opentelemetry_experimental 0.6
 -define(OVERFLOW_ATTRS, [{'otel.metric.overflow', true}]).
 
 init(_Config) ->
-    case ets:info(?TABLE) of
+    case ets:info(?TABLE, owner) of
         undefined ->
-            ets:new(?TABLE, [named_table, protected, set, {read_concurrency, true}]);
-        _ ->
-            ok
-    end,
-    {ok, #{}}.
+            _ = ets:new(?TABLE, [named_table, protected, set, {read_concurrency, true}]),
+            {ok, #{}};
+        Owner when Owner =:= self() ->
+            {ok, #{}};
+        Owner ->
+            ?LOG_WARNING(#{
+                what => otel_nova_prom_exporter_already_running,
+                owner => Owner,
+                reason => ~"another metric reader already exports to otel_nova_prom_exporter"
+            }),
+            ignore
+    end.
 
 export(Metrics, _Resource, _State) ->
     lists:foreach(fun accumulate_metric/1, Metrics),
@@ -79,7 +87,7 @@ get_metrics() ->
 accumulate_metric(#metric{name = Name, description = Desc, unit = Unit, data = Data}) ->
     PromName = prom_metric_name(Name, Unit, Data),
     Type = prom_type(Data),
-    ets:insert(?TABLE, {metric_meta(PromName), Desc, Type, Unit, Data}),
+    ets:insert(?TABLE, {metric_meta(PromName), Desc, Type}),
     accumulate_data(PromName, Data).
 
 accumulate_data(PromName, #histogram{datapoints = Datapoints, aggregation_temporality = T}) ->
@@ -153,19 +161,21 @@ reset_overflow(PromName, _Cumulative) ->
     ets:delete(?TABLE, {dp, PromName, ?OVERFLOW_ATTRS}).
 
 dp_key(PromName, Attrs) ->
-    Key = {dp, PromName, normalize_attrs(Attrs)},
-    case ets:member(?TABLE, Key) of
+    case normalize_attrs(Attrs) of
+        ?OVERFLOW_ATTRS -> {dp, PromName, ?OVERFLOW_ATTRS};
+        AttrList -> series_key(PromName, {dp, PromName, AttrList})
+    end.
+
+series_key(PromName, Key) ->
+    CountKey = {series, PromName},
+    case ets:member(?TABLE, Key) orelse ets:lookup(?TABLE, CountKey) of
         true ->
             Key;
-        false ->
-            CountKey = {series, PromName},
-            case ets:lookup(?TABLE, CountKey) of
-                [{CountKey, Count}] when Count >= ?MAX_SERIES ->
-                    {dp, PromName, ?OVERFLOW_ATTRS};
-                _ ->
-                    _ = ets:update_counter(?TABLE, CountKey, 1, {CountKey, 0}),
-                    Key
-            end
+        [{CountKey, Count}] when Count >= ?MAX_SERIES ->
+            {dp, PromName, ?OVERFLOW_ATTRS};
+        _ ->
+            _ = ets:update_counter(?TABLE, CountKey, 1, {CountKey, 0}),
+            Key
     end.
 
 add_num(A, B) when is_number(A), is_number(B) -> A + B;
@@ -186,7 +196,7 @@ metric_meta(PromName) -> {meta, PromName}.
 %%--------------------------------------------------------------------
 
 render_all() ->
-    Metas = ets:match(?TABLE, {{meta, '$1'}, '$2', '$3', '_', '_'}),
+    Metas = ets:match(?TABLE, {{meta, '$1'}, '$2', '$3'}),
     Lines = lists:flatmap(
         fun([PromName, Desc, Type]) ->
             render_metric(PromName, Desc, Type)
