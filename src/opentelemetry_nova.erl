@@ -1,10 +1,14 @@
 -module(opentelemetry_nova).
+-moduledoc """
+OpenTelemetry instrumentation for Nova. See the README for the full setup.
+""".
 
 -export([setup/0, setup/1]).
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry_api_experimental/include/otel_meter.hrl").
 
+-doc "Creates the HTTP server metric instruments. Call it once from your application's `start/2`.".
 setup() ->
     opentelemetry:get_application_tracer(?MODULE),
     ?create_histogram('http.server.request.duration', #{
@@ -30,6 +34,12 @@ setup() ->
     }),
     ok.
 
+-doc """
+Same as `setup/0`. With `#{prometheus => #{port => Port}}` it also starts
+`otel_nova_prom_server` linked to the caller. Prefer adding
+`otel_nova_prom_server:child_spec/1` to your supervisor instead, so the
+listener is stopped with your application.
+""".
 setup(Opts) ->
     setup(),
     case maps:get(prometheus, Opts, undefined) of
