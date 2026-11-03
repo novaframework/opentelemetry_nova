@@ -8,6 +8,14 @@ own). Delta datapoints are accumulated into cumulative values, cumulative
 datapoints replace the stored value, so the output is correct for either
 reader temporality.
 
+Each metric keeps at most 2000 series. Datapoints for further attribute sets
+are added to one overflow series labelled `otel_metric_overflow="true"`, so
+an unexpected source of label values cannot grow the table without bound.
+Label values that are not valid UTF-8 are rendered as `_INVALID_UTF8`.
+
+The table is written only by the process that called `init/1`, which is the
+metric reader.
+
 Implements the exporter API of both opentelemetry_experimental 0.6
 (`export/3`, `shutdown/1`) and 0.5 (`export/4`, `shutdown/1`).
 """.
@@ -19,11 +27,13 @@ Implements the exporter API of both opentelemetry_experimental 0.6
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
 
 -define(TABLE, otel_nova_prom_metrics).
+-define(MAX_SERIES, 2000).
+-define(OVERFLOW_ATTRS, [{'otel.metric.overflow', true}]).
 
 init(_Config) ->
     case ets:info(?TABLE) of
         undefined ->
-            ets:new(?TABLE, [named_table, public, set, {read_concurrency, true}]);
+            ets:new(?TABLE, [named_table, protected, set, {read_concurrency, true}]);
         _ ->
             ok
     end,
@@ -73,6 +83,7 @@ accumulate_metric(#metric{name = Name, description = Desc, unit = Unit, data = D
     accumulate_data(PromName, Data).
 
 accumulate_data(PromName, #histogram{datapoints = Datapoints, aggregation_temporality = T}) ->
+    reset_overflow(PromName, T),
     lists:foreach(fun(DP) -> accumulate_histogram(PromName, T, DP) end, Datapoints);
 accumulate_data(PromName, #sum{
     datapoints = Datapoints, is_monotonic = Monotonic, aggregation_temporality = T
@@ -82,18 +93,25 @@ accumulate_data(PromName, #sum{
             true -> counter;
             false -> gauge
         end,
+    reset_overflow(PromName, T),
     lists:foreach(fun(DP) -> accumulate_sum(PromName, Kind, T, DP) end, Datapoints);
 accumulate_data(PromName, #gauge{datapoints = Datapoints}) ->
     lists:foreach(fun(DP) -> store_value(PromName, gauge, DP) end, Datapoints).
 
-accumulate_histogram(PromName, ?TEMPORALITY_DELTA, #histogram_datapoint{
+accumulate_histogram(PromName, T, #histogram_datapoint{
     attributes = Attrs,
     count = Count,
     sum = Sum,
     bucket_counts = BucketCounts,
     explicit_bounds = Bounds
 }) ->
-    Key = {dp, PromName, normalize_attrs(Attrs)},
+    Key = dp_key(PromName, Attrs),
+    case adds(T, Key) of
+        true -> add_histogram(Key, Count, Sum, BucketCounts, Bounds);
+        false -> ets:insert(?TABLE, {Key, {hist, Count, Sum, BucketCounts, Bounds}})
+    end.
+
+add_histogram(Key, Count, Sum, BucketCounts, Bounds) ->
     case ets:lookup(?TABLE, Key) of
         [{Key, {hist, PrevCount, PrevSum, PrevBuckets, B}}] ->
             NewBuckets = add_lists(PrevBuckets, BucketCounts),
@@ -102,31 +120,53 @@ accumulate_histogram(PromName, ?TEMPORALITY_DELTA, #histogram_datapoint{
             );
         [] ->
             ets:insert(?TABLE, {Key, {hist, Count, Sum, BucketCounts, Bounds}})
-    end;
-accumulate_histogram(PromName, _Cumulative, #histogram_datapoint{
-    attributes = Attrs,
-    count = Count,
-    sum = Sum,
-    bucket_counts = BucketCounts,
-    explicit_bounds = Bounds
-}) ->
-    ets:insert(?TABLE, {
-        {dp, PromName, normalize_attrs(Attrs)}, {hist, Count, Sum, BucketCounts, Bounds}
-    }).
+    end.
 
-accumulate_sum(PromName, Kind, ?TEMPORALITY_DELTA, #datapoint{attributes = Attrs, value = Value}) ->
-    Key = {dp, PromName, normalize_attrs(Attrs)},
+accumulate_sum(PromName, Kind, T, #datapoint{attributes = Attrs, value = Value}) ->
+    Key = dp_key(PromName, Attrs),
+    case adds(T, Key) of
+        true -> add_value(Key, Kind, Value);
+        false -> ets:insert(?TABLE, {Key, {Kind, Value}})
+    end.
+
+add_value(Key, Kind, Value) ->
     case ets:lookup(?TABLE, Key) of
         [{Key, {Kind, PrevValue}}] ->
             ets:insert(?TABLE, {Key, {Kind, add_num(PrevValue, Value)}});
         _ ->
             ets:insert(?TABLE, {Key, {Kind, Value}})
-    end;
-accumulate_sum(PromName, Kind, _Cumulative, DP) ->
-    store_value(PromName, Kind, DP).
+    end.
 
 store_value(PromName, Kind, #datapoint{attributes = Attrs, value = Value}) ->
-    ets:insert(?TABLE, {{dp, PromName, normalize_attrs(Attrs)}, {Kind, Value}}).
+    ets:insert(?TABLE, {dp_key(PromName, Attrs), {Kind, Value}}).
+
+%% Delta datapoints always add up. Cumulative datapoints replace their series,
+%% except in the overflow series, which is the sum of every cumulative
+%% datapoint that did not fit and is reset before each metric is accumulated.
+adds(?TEMPORALITY_DELTA, _Key) -> true;
+adds(_Cumulative, {dp, _PromName, ?OVERFLOW_ATTRS}) -> true;
+adds(_Cumulative, _Key) -> false.
+
+reset_overflow(_PromName, ?TEMPORALITY_DELTA) ->
+    ok;
+reset_overflow(PromName, _Cumulative) ->
+    ets:delete(?TABLE, {dp, PromName, ?OVERFLOW_ATTRS}).
+
+dp_key(PromName, Attrs) ->
+    Key = {dp, PromName, normalize_attrs(Attrs)},
+    case ets:member(?TABLE, Key) of
+        true ->
+            Key;
+        false ->
+            CountKey = {series, PromName},
+            case ets:lookup(?TABLE, CountKey) of
+                [{CountKey, Count}] when Count >= ?MAX_SERIES ->
+                    {dp, PromName, ?OVERFLOW_ATTRS};
+                _ ->
+                    _ = ets:update_counter(?TABLE, CountKey, 1, {CountKey, 0}),
+                    Key
+            end
+    end.
 
 add_num(A, B) when is_number(A), is_number(B) -> A + B;
 add_num(undefined, B) -> B;
@@ -304,6 +344,12 @@ prom_label_value(V) ->
     escape_label_value(to_bin(V)).
 
 escape_label_value(Bin) ->
+    case unicode:characters_to_binary(Bin) of
+        Bin -> escape_valid_label_value(Bin);
+        _ -> ~"_INVALID_UTF8"
+    end.
+
+escape_valid_label_value(Bin) ->
     binary:replace(
         binary:replace(
             binary:replace(Bin, <<"\\">>, <<"\\\\">>, [global]),

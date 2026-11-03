@@ -20,6 +20,9 @@ all() ->
         format_updown_counter,
         label_dots_to_underscores,
         label_escaping,
+        invalid_utf8_label_value,
+        delta_series_overflow,
+        cumulative_series_overflow,
         unit_suffix_seconds,
         unit_suffix_bytes,
         empty_metrics,
@@ -266,6 +269,38 @@ label_escaping(_Config) ->
     ?assertMatch({match, _}, re:run(Output, <<"\\\\\\\\">>)),
     ok.
 
+invalid_utf8_label_value(_Config) ->
+    Metric = sum_metric(hits, temporality_delta, true, [{#{method => <<"G", 16#FF, "T">>}, 1}]),
+    ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+    Output = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(Output, unicode:characters_to_binary(Output)),
+    ?assertMatch({match, _}, re:run(Output, ~"hits_total\\{method=\"_INVALID_UTF8\"\\} 1\n")).
+
+delta_series_overflow(_Config) ->
+    Datapoints = [{#{n => N}, 1} || N <- lists:seq(1, 2500)],
+    ok = otel_nova_prom_exporter:export(
+        [sum_metric(hits, temporality_delta, true, Datapoints)], undefined, #{}
+    ),
+    ok = otel_nova_prom_exporter:export(
+        [sum_metric(hits, temporality_delta, true, [{#{n => 9999}, 1}])], undefined, #{}
+    ),
+    Output = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(2001, length(binary:matches(Output, ~"hits_total{"))),
+    ?assertMatch(
+        {match, _}, re:run(Output, ~"hits_total\\{otel_metric_overflow=\"true\"\\} 501\n")
+    ).
+
+cumulative_series_overflow(_Config) ->
+    Datapoints = [{#{n => N}, 2} || N <- lists:seq(1, 2100)],
+    Metric = sum_metric(hits, temporality_cumulative, true, Datapoints),
+    ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+    ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+    Output = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(2001, length(binary:matches(Output, ~"hits_total{"))),
+    ?assertMatch(
+        {match, _}, re:run(Output, ~"hits_total\\{otel_metric_overflow=\"true\"\\} 200\n")
+    ).
+
 unit_suffix_seconds(_Config) ->
     Metric = #metric{
         name = 'http.server.request.duration',
@@ -453,6 +488,27 @@ updown(Temporality, Value) ->
 counter(Temporality, Value) ->
     sum_metric(hits, Temporality, true, Value).
 
+sum_metric(Name, Temporality, Monotonic, Datapoints) when is_list(Datapoints) ->
+    #metric{
+        name = Name,
+        description = ~"test",
+        unit = undefined,
+        data = #sum{
+            datapoints = [
+                #datapoint{
+                    attributes = Attrs,
+                    start_time = 0,
+                    time = 1000,
+                    value = Value,
+                    exemplars = [],
+                    flags = 0
+                }
+             || {Attrs, Value} <- Datapoints
+            ],
+            aggregation_temporality = Temporality,
+            is_monotonic = Monotonic
+        }
+    };
 sum_metric(Name, Temporality, Monotonic, Value) ->
     #metric{
         name = Name,
