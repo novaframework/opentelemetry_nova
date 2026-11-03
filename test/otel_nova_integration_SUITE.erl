@@ -16,7 +16,8 @@
     plugin_failure_does_not_fail_the_request/1,
     request_labels_are_bounded/1,
     invalid_utf8_from_h2_keeps_exposition_valid/1,
-    invalid_forwarded_for_still_records_request/1
+    invalid_forwarded_for_still_records_request/1,
+    prom_server_binds_loopback_by_default/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -45,7 +46,8 @@ all() ->
         plugin_failure_does_not_fail_the_request,
         request_labels_are_bounded,
         invalid_utf8_from_h2_keeps_exposition_valid,
-        invalid_forwarded_for_still_records_request
+        invalid_forwarded_for_still_records_request,
+        prom_server_binds_loopback_by_default
     ].
 
 init_per_suite(Config) ->
@@ -306,6 +308,20 @@ invalid_forwarded_for_still_records_request(_Config) ->
     await_metric(
         ~"http_server_request_duration_seconds_count\\{[^}]*server_address=\"xff.test\"[^}]*\\} 2"
     ).
+
+prom_server_binds_loopback_by_default(_Config) ->
+    {ok, _} = otel_nova_prom_server:start_link(#{port => ?METRICS_PORT}),
+    try
+        ?assertEqual({{127, 0, 0, 1}, ?METRICS_PORT}, ranch:get_addr(otel_nova_prom_listener))
+    after
+        otel_nova_prom_server:stop()
+    end,
+    {ok, _} = otel_nova_prom_server:start_link(#{port => ?METRICS_PORT, ip => {0, 0, 0, 0}}),
+    try
+        ?assertEqual({{0, 0, 0, 0}, ?METRICS_PORT}, ranch:get_addr(otel_nova_prom_listener))
+    after
+        otel_nova_prom_server:stop()
+    end.
 
 %%--------------------------------------------------------------------
 %% Helpers
