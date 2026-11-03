@@ -21,8 +21,6 @@ failures are logged without request data and never fail the request.
 
 -export([pre_request/4, post_request/4, plugin_info/0]).
 
--include_lib("opentelemetry_api/include/otel_tracer.hrl").
-
 pre_request(Req, Env, _Opts, State) ->
     try
         instrument(Req, Env)
@@ -48,18 +46,19 @@ plugin_info() ->
 
 instrument(Req, Env) ->
     attach_context(Req),
+    SpanCtx = otel_tracer:current_span_ctx(),
     case route(Req) of
         undefined ->
             ok;
         Route ->
             Method = otel_nova_http:span_method(otel_nova_http:method(cowboy_req:method(Req))),
-            ?set_attribute('http.route', Route),
+            annotate(SpanCtx, #{'http.route' => Route}),
             report_route(Route, Req),
-            ?update_name(<<Method/binary, " ", Route/binary>>)
+            rename(SpanCtx, <<Method/binary, " ", Route/binary>>)
     end,
     case extract_callback_info(Env) of
         {App, Controller, Action} ->
-            ?set_attributes(#{
+            annotate(SpanCtx, #{
                 'nova.app' => atom_to_binary(App, utf8),
                 'nova.controller' => atom_to_binary(Controller, utf8),
                 'nova.action' => atom_to_binary(Action, utf8)
@@ -67,7 +66,19 @@ instrument(Req, Env) ->
         undefined ->
             ok
     end,
-    enrich_logger_metadata(?current_span_ctx).
+    enrich_logger_metadata(SpanCtx).
+
+annotate(undefined, _Attrs) ->
+    ok;
+annotate(SpanCtx, Attrs) ->
+    _ = otel_span:set_attributes(SpanCtx, Attrs),
+    ok.
+
+rename(undefined, _Name) ->
+    ok;
+rename(SpanCtx, Name) ->
+    _ = otel_span:update_name(SpanCtx, Name),
+    ok.
 
 attach_context(#{otel_nova_ctx := Ctx}) ->
     _ = otel_ctx:attach(Ctx),
@@ -80,6 +91,8 @@ report_route(Route, Req = #{otel_nova_ctx := _}) ->
 report_route(_Route, _Req) ->
     ok.
 
+enrich_logger_metadata(undefined) ->
+    ok;
 enrich_logger_metadata(SpanCtx) ->
     case otel_span:is_valid(SpanCtx) of
         true ->
@@ -101,12 +114,15 @@ route(Req = #{path := Path}) when is_binary(Path) ->
     case split_pathinfo(Segments, Req) of
         {ok, Fixed, Tail} ->
             Template = replace_bindings(Fixed, maps:get(bindings, Req, #{})) ++ Tail,
-            valid_route(iolist_to_binary([<<"/">> | lists:join(<<"/">>, Template)]));
+            valid_route(join_route(Template));
         error ->
             undefined
     end;
 route(_Req) ->
     undefined.
+
+join_route([]) -> ~"/";
+join_route(Segments) -> <<<<"/", S/binary>> || S <- Segments>>.
 
 valid_route(Route) ->
     case otel_nova_http:is_utf8(Route) of
@@ -115,15 +131,15 @@ valid_route(Route) ->
     end.
 
 canonical_segments(Path) ->
-    canonicalise([S || S <- binary:split(Path, <<"/">>, [global]), S =/= <<>>], []).
+    canonicalise([S || S <- binary:split(Path, ~"/", [global]), S =/= ~""], []).
 
 canonicalise([], Acc) ->
     lists:reverse(Acc);
-canonicalise([<<".">> | Tl], Acc) ->
+canonicalise([~"." | Tl], Acc) ->
     canonicalise(Tl, Acc);
-canonicalise([<<"..">> | Tl], []) ->
+canonicalise([~".." | Tl], []) ->
     canonicalise(Tl, []);
-canonicalise([<<"..">> | Tl], [_ | Acc]) ->
+canonicalise([~".." | Tl], [_ | Acc]) ->
     canonicalise(Tl, Acc);
 canonicalise([Segment | Tl], Acc) ->
     canonicalise(Tl, [Segment | Acc]).
@@ -132,7 +148,7 @@ split_pathinfo(Segments, #{extra_state := #{pathinfo := PathInfo}}) when
     is_list(PathInfo), length(PathInfo) =< length(Segments)
 ->
     case lists:split(length(Segments) - length(PathInfo), Segments) of
-        {Fixed, PathInfo} -> {ok, Fixed, [<<"[...]">>]};
+        {Fixed, PathInfo} -> {ok, Fixed, [~"[...]"]};
         _ -> error
     end;
 split_pathinfo(_Segments, #{extra_state := #{pathinfo := _}}) ->

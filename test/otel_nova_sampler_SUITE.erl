@@ -129,19 +129,8 @@ run_request(Method, Path) ->
     run_request(Method, Path, #{}).
 
 run_request(Method, Path, Headers) ->
-    Req = #{
-        method => Method,
-        path => Path,
-        qs => ~"probe=1",
-        scheme => ~"http",
-        host => ~"localhost",
-        port => 8080,
-        version => 'HTTP/1.1',
-        headers => Headers#{~"host" => ~"localhost:8080"},
-        peer => {{127, 0, 0, 1}, 12345},
-        pid => self(),
-        streamid => 1
-    },
+    Req0 = otel_nova_test_util:stream_req(Method, Path),
+    Req = Req0#{qs => ~"probe=1", headers => Headers#{~"host" => ~"localhost:8080"}},
     {[], State0} = otel_nova_stream_h:init(1, Req, #{stream_handlers => []}),
     {[], State} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"ok"}, State0),
     otel_nova_stream_h:terminate(1, normal, State).

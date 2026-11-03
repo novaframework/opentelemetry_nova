@@ -7,19 +7,23 @@
     ~"GET", ~"HEAD", ~"POST", ~"PUT", ~"DELETE", ~"CONNECT", ~"OPTIONS", ~"TRACE", ~"PATCH"
 ]).
 
+-spec method(binary()) -> binary().
 method(Method) ->
     case lists:member(Method, ?KNOWN_METHODS) of
         true -> Method;
         false -> ~"_OTHER"
     end.
 
+-spec scheme(binary()) -> binary().
 scheme(~"http") -> ~"http";
 scheme(~"https") -> ~"https";
 scheme(_) -> ~"_OTHER".
 
+-spec span_method(binary()) -> binary().
 span_method(~"_OTHER") -> ~"HTTP";
 span_method(Method) -> Method.
 
+-spec client_address(cowboy_req:req(), binary()) -> binary().
 client_address(Req, Peer) ->
     case cowboy_req:header(~"x-forwarded-for", Req) of
         undefined ->
@@ -32,6 +36,7 @@ client_address(Req, Peer) ->
             valid_or(trim(First), Peer)
     end.
 
+-spec is_utf8(binary()) -> boolean().
 is_utf8(Bin) ->
     unicode:characters_to_binary(Bin) =:= Bin.
 
