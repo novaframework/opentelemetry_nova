@@ -60,6 +60,21 @@ plugin also names the span after the route, adds the `nova.*` attributes, puts
 `trace_id` and `span_id` in the logger process metadata and reports the route
 for the metrics. Plugins listed before it run without a trace context.
 
+A route group that declares its own `plugins` does not get the global list
+under Nova's default `plugin_strategy` (`local_or_global`), so its requests
+lose the trace linkage. Either list `otel_nova_plugin` first in that group's
+`plugins`, or, for an application mounted through `nova_apps`, set
+`plugin_strategy => global_first` (Nova 0.17.0 and later) so the global
+plugins run before the group's own:
+
+```erlang
+{nova_apps, [{my_admin_app, #{prefix => "/admin", plugin_strategy => global_first}}]}
+```
+
+`otel_nova_plugin` never fails a request: if its instrumentation crashes it
+logs `otel_nova_instrumentation_failed` without request data and lets the
+request continue.
+
 ### 2. Instruments
 
 Call `setup/0` from your application's `start/2` to create the metric
@@ -161,6 +176,27 @@ Server spans are created for every HTTP request with the following attributes:
 | `nova.action` | Action function |
 
 Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
+
+`http.route` is the route template, never the raw path. Bound segments become
+`:name`, and the tail matched by a catch-all route, including Nova static
+routes such as `/assets/[...]`, becomes `[...]`, so every file under `/assets`
+shares one label. When the template cannot be determined, `http.route` is left
+out and the span keeps the name `HTTP {METHOD}`. This keeps the number of metric
+series bounded by the route table.
+
+Notes:
+
+- `client.address` is taken from the first `X-Forwarded-For` entry, or the
+  `Forwarded` header, without validation. Behind clients you do not trust, or
+  without a proxy that overwrites these headers, the value is whatever the
+  client sent.
+- The trace context is not detached on a WebSocket upgrade. This is harmless.
+  Over HTTP/1.1 the WebSocket runs in the connection process, which never has
+  the context attached. Over HTTP/2 it keeps running in the request process,
+  so spans the WebSocket handler creates are children of the upgrade request's
+  server span.
+- With `cowboy_compress_h` after `otel_nova_stream_h`, the response body size
+  is measured before compression.
 
 ## Metrics
 
