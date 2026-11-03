@@ -101,6 +101,33 @@ Traces, exported over OTLP:
 ]}
 ```
 
+### 4. Options
+
+Set these in the `opentelemetry_nova` application environment:
+
+```erlang
+{opentelemetry_nova, [
+    {trust_forwarded_for, false},
+    {metric_server_hosts, [~"api.example.com"]},
+    {trust_incoming_context, true}
+]}
+```
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `trust_forwarded_for` | `false` | Take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. Otherwise `client.address` is the peer address. |
+| `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
+| `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. |
+
+Enable `trust_forwarded_for` only behind a proxy that sets or overwrites these
+headers. Without one, the value is whatever the client sent.
+
+With `trust_incoming_context` at its default, a client that sends a sampled
+`traceparent` decides the sampling of its own request, including requests
+excluded by `otel_nova_sampler` under `parent_based`, and its `baggage` is
+propagated to every service the request reaches. On an edge that faces
+untrusted clients, set it to `false`.
+
 ## Excluding requests from tracing
 
 `otel_nova_sampler` drops the server span of excluded requests:
@@ -115,7 +142,7 @@ The sampler decides when the server span starts, before Nova has routed the
 request. Entries are `"METHOD /path"` and match the raw request path (without
 the query string), not the route template, so `~"GET /users/:id"` does not match
 `/users/42`. With `parent_based`, a request carrying a sampled `traceparent`
-follows its parent.
+follows its parent, unless `trust_incoming_context` is `false`.
 
 ## Prometheus metrics
 
@@ -148,6 +175,43 @@ most `export_interval_ms`. The exporter turns delta datapoints into cumulative
 values and stores cumulative datapoints as they are, so it is correct for either
 reader temporality.
 
+The listener binds `127.0.0.1` and speaks HTTP/1.1 only, and `/metrics` has no
+authentication. To let a scraper on another host reach it, set `ip`, for
+example in Kubernetes:
+
+```erlang
+otel_nova_prom_server:child_spec(#{port => 9464, ip => {0, 0, 0, 0}})
+```
+
+and restrict who can connect with a `NetworkPolicy` that only admits the
+Prometheus pods to port 9464:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-app-metrics
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9464
+```
+
+A policy that selects the pods replaces the default allow-all for them, so
+list your application's own port in another `ingress` rule as well.
+
+Each metric keeps at most 2000 series. Further attribute sets are added to one
+overflow series labelled `otel_metric_overflow="true"`. Label values that are
+not valid UTF-8 are rendered as `_INVALID_UTF8`, so the output always parses.
+
 `opentelemetry_nova:setup(#{prometheus => #{port => 9464}})` still works and
 starts the server linked to the caller, but the supervised child is
 preferred: it stops the listener with your application.
@@ -158,14 +222,15 @@ Server spans are created for every HTTP request with the following attributes:
 
 | Attribute | Source |
 |-----------|--------|
-| `http.request.method` | Request method |
+| `http.request.method` | Request method, or `_OTHER` if it is not one of the nine standard methods |
+| `http.request.method_original` | Request method as sent, when it differs from `http.request.method` |
 | `http.response.status_code` | Response status code |
 | `http.route` | Matched route template (e.g. `/users/:id`) |
 | `url.path` | Request path |
-| `url.scheme` | `http` or `https` |
+| `url.scheme` | Request scheme |
 | `server.address` | Host header |
 | `server.port` | Server port |
-| `client.address` | `X-Forwarded-For` / `Forwarded` header, or peer IP |
+| `client.address` | Peer IP, or the `X-Forwarded-For` / `Forwarded` address with `trust_forwarded_for` |
 | `network.peer.address` | Peer IP address |
 | `network.peer.port` | Peer port |
 | `network.protocol.version` | HTTP version (`1.0`, `1.1`, `2`, `3`) |
@@ -176,6 +241,7 @@ Server spans are created for every HTTP request with the following attributes:
 | `nova.action` | Action function |
 
 Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
+For an `_OTHER` method the method part is `HTTP`.
 
 `http.route` is the route template, never the raw path. Bound segments become
 `:name`, and the tail matched by a catch-all route, including Nova static
@@ -186,10 +252,15 @@ series bounded by the route table.
 
 Notes:
 
-- `client.address` is taken from the first `X-Forwarded-For` entry, or the
-  `Forwarded` header, without validation. Behind clients you do not trust, or
-  without a proxy that overwrites these headers, the value is whatever the
-  client sent.
+- `client.address` uses `X-Forwarded-For` or `Forwarded` only when
+  `trust_forwarded_for` is enabled, and only when the address in it is a valid
+  IP address. See [Options](#4-options).
+- `http.route` is rebuilt from the request path and the binding values, since
+  Nova does not hand the matched route template to plugins. Two kinds of path
+  get a wrong label: a literal segment equal to a binding value (`/users/users`
+  on `/users/:id` becomes `/:id/:id`), and two bindings with the same value
+  (`/teams/7/users/7` on `/teams/:team/users/:user` shows one of the two names
+  in both places). The labels stay bounded; only their text is wrong.
 - The trace context is not detached on a WebSocket upgrade. This is harmless.
   Over HTTP/1.1 the WebSocket runs in the connection process, which never has
   the context attached. Over HTTP/2 it keeps running in the request process,
@@ -202,10 +273,15 @@ Notes:
 
 | Metric | Type | Attributes |
 |--------|------|------------|
-| `http.server.request.duration` | Histogram (seconds) | method, scheme, host, port, status, route, error.type |
-| `http.server.active_requests` | UpDown Counter (Prometheus gauge of in-flight requests) | method, scheme, host, port |
-| `http.server.request.body.size` | Histogram (bytes) | method, scheme, host, port, status, route, error.type |
-| `http.server.response.body.size` | Histogram (bytes) | method, scheme, host, port, status, route, error.type |
+| `http.server.request.duration` | Histogram (seconds) | method, scheme, status, route, error.type |
+| `http.server.active_requests` | UpDown Counter (Prometheus gauge of in-flight requests) | method, scheme |
+| `http.server.request.body.size` | Histogram (bytes) | method, scheme, status, route, error.type |
+| `http.server.response.body.size` | Histogram (bytes) | method, scheme, status, route, error.type |
+
+Every attribute value is bounded: the method is one of the nine standard
+methods or `_OTHER`, the scheme is `http`, `https` or `_OTHER`, and the route
+is a template. `server.address` and `server.port` are added only when
+`metric_server_hosts` is set.
 
 ## Components
 
