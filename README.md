@@ -21,6 +21,29 @@ List `opentelemetry_exporter`, `opentelemetry_experimental` and `opentelemetry`
 before your own application in the release (or in `applications` of your
 `.app.src`) so the SDK is running before the first request.
 
+## Upgrading from 0.4
+
+These defaults and values change. Check your scrape config, dashboards and
+alerts:
+
+- `otel_nova_prom_server` binds `127.0.0.1` instead of all interfaces. A
+  Prometheus that scrapes the pod IP in Kubernetes gets connection refused.
+  Set `ip => {0, 0, 0, 0}` and add a `NetworkPolicy` (see
+  [Prometheus metrics](#prometheus-metrics)). The listener also no longer
+  accepts h2c.
+- `X-Forwarded-For` and `Forwarded` are no longer trusted: `client.address` is
+  the peer address unless you set `trust_forwarded_for`.
+- `server.address` and `server.port` are no longer on metrics unless you set
+  `metric_server_hosts`. Queries and alerts that group by them need updating.
+- Methods outside the nine standard ones (`GET`, `HEAD`, `POST`, `PUT`,
+  `DELETE`, `CONNECT`, `OPTIONS`, `TRACE`, `PATCH`) become `_OTHER` on spans
+  and metrics. Spans keep the sent value in `http.request.method_original`.
+- `http.route` values change: they are route templates (`/users/:id`,
+  `/assets/[...]`) instead of raw paths, and the attribute is absent when the
+  route cannot be determined.
+- `otel_nova_sampler` exclusions match the method plus the raw request path
+  (`~"GET /metrics"`), not the span name.
+
 ## Setup
 
 Tracing needs three pieces: the stream handler, the plugin and a call to
@@ -119,8 +142,11 @@ Set these in the `opentelemetry_nova` application environment:
 | `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
 | `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. |
 
-Enable `trust_forwarded_for` only behind a proxy that sets or overwrites these
-headers. Without one, the value is whatever the client sent.
+Enable `trust_forwarded_for` only behind a proxy that replaces these headers
+with its own value. Many proxies append to `X-Forwarded-For` instead (nginx
+with `$proxy_add_x_forwarded_for`, Traefik, ingress-nginx), so the first entry
+is still whatever the client sent, and `client.address` stays
+client-controlled.
 
 With `trust_incoming_context` at its default, a client that sends a sampled
 `traceparent` decides the sampling of its own request, including requests
