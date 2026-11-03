@@ -24,6 +24,10 @@ all() ->
         unit_suffix_bytes,
         empty_metrics,
         delta_accumulation,
+        delta_updown_counter_accumulates,
+        cumulative_counter_replaces,
+        cumulative_histogram_replaces,
+        reader_api_export_3,
         http_endpoint
     ].
 
@@ -372,6 +376,38 @@ delta_accumulation(_Config) ->
     ?assertMatch({match, _}, re:run(Output, <<"test_counter_total\\{key=\"a\"\\} 17">>)),
     ok.
 
+delta_updown_counter_accumulates(_Config) ->
+    otel_nova_prom_exporter:export([updown(temporality_delta, 1)], undefined, #{}),
+    otel_nova_prom_exporter:export([updown(temporality_delta, 1)], undefined, #{}),
+    ?assertMatch({match, _}, re:run(otel_nova_prom_exporter:get_metrics(), ~"active 2\n")),
+    otel_nova_prom_exporter:export([updown(temporality_delta, -2)], undefined, #{}),
+    ?assertMatch({match, _}, re:run(otel_nova_prom_exporter:get_metrics(), ~"active 0\n")),
+    ok.
+
+cumulative_counter_replaces(_Config) ->
+    otel_nova_prom_exporter:export([counter(temporality_cumulative, 10)], undefined, #{}),
+    otel_nova_prom_exporter:export([counter(temporality_cumulative, 12)], undefined, #{}),
+    ?assertMatch({match, _}, re:run(otel_nova_prom_exporter:get_metrics(), ~"hits_total 12\n")),
+    ok.
+
+cumulative_histogram_replaces(_Config) ->
+    otel_nova_prom_exporter:export([histogram(temporality_cumulative, 2)], undefined, #{}),
+    otel_nova_prom_exporter:export([histogram(temporality_cumulative, 3)], undefined, #{}),
+    Output = otel_nova_prom_exporter:get_metrics(),
+    ?assertMatch({match, _}, re:run(Output, ~"latency_count 3\n")),
+    ?assertMatch({match, _}, re:run(Output, ~"latency_bucket\\{le=\"\\+Inf\"\\} 3\n")),
+    ok.
+
+reader_api_export_3(_Config) ->
+    ?assertEqual(
+        ok, otel_nova_prom_exporter:export([counter(temporality_delta, 4)], undefined, #{})
+    ),
+    ?assertMatch({match, _}, re:run(otel_nova_prom_exporter:get_metrics(), ~"hits_total 4\n")),
+    ?assertEqual(ok, otel_nova_prom_exporter:shutdown(#{})),
+    ?assertEqual(<<>>, otel_nova_prom_exporter:get_metrics()),
+    {ok, _} = otel_nova_prom_exporter:init(#{}),
+    ok.
+
 empty_metrics(_Config) ->
     otel_nova_prom_exporter:export(metrics, [], undefined, #{}),
     Output = otel_nova_prom_exporter:get_metrics(),
@@ -406,3 +442,59 @@ http_endpoint(_Config) ->
     ?assertMatch("text/plain" ++ _, ContentType),
     ?assertMatch({match, _}, re:run(Body, "test_http 42")),
     ok.
+
+%%--------------------------------------------------------------------
+%% Helpers
+%%--------------------------------------------------------------------
+
+updown(Temporality, Value) ->
+    sum_metric(active, Temporality, false, Value).
+
+counter(Temporality, Value) ->
+    sum_metric(hits, Temporality, true, Value).
+
+sum_metric(Name, Temporality, Monotonic, Value) ->
+    #metric{
+        name = Name,
+        description = ~"test",
+        unit = undefined,
+        data = #sum{
+            datapoints = [
+                #datapoint{
+                    attributes = #{},
+                    start_time = 0,
+                    time = 1000,
+                    value = Value,
+                    exemplars = [],
+                    flags = 0
+                }
+            ],
+            aggregation_temporality = Temporality,
+            is_monotonic = Monotonic
+        }
+    }.
+
+histogram(Temporality, Count) ->
+    #metric{
+        name = latency,
+        description = ~"test",
+        unit = undefined,
+        data = #histogram{
+            datapoints = [
+                #histogram_datapoint{
+                    attributes = #{},
+                    start_time = 0,
+                    time = 1000,
+                    count = Count,
+                    sum = Count,
+                    bucket_counts = [Count, 0],
+                    explicit_bounds = [1.0],
+                    exemplars = [],
+                    flags = 0,
+                    min = 1,
+                    max = 1
+                }
+            ],
+            aggregation_temporality = Temporality
+        }
+    }.

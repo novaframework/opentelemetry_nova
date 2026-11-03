@@ -1,8 +1,21 @@
 -module(otel_nova_prom_exporter).
+-moduledoc """
+Metric exporter that renders OpenTelemetry metrics in the Prometheus text format.
 
--export([init/1, export/4, force_flush/0, shutdown/0]).
+Configure it as the exporter of an `otel_metric_reader` and serve the result
+with `otel_nova_prom_server` (or `otel_nova_prom_handler` on a listener of your
+own). Delta datapoints are accumulated into cumulative values, cumulative
+datapoints replace the stored value, so the output is correct for either
+reader temporality.
+
+Implements the exporter API of both opentelemetry_experimental 0.6
+(`export/3`, `shutdown/1`) and 0.5 (`export/4`, `shutdown/1`).
+""".
+
+-export([init/1, export/3, export/4, force_flush/0, shutdown/0, shutdown/1]).
 -export([get_metrics/0]).
 
+-include_lib("opentelemetry_api_experimental/include/otel_metrics.hrl").
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
 
 -define(TABLE, otel_nova_prom_metrics).
@@ -16,14 +29,20 @@ init(_Config) ->
     end,
     {ok, #{}}.
 
-export(metrics, Metrics, _Resource, _State) ->
+export(Metrics, _Resource, _State) ->
     lists:foreach(fun accumulate_metric/1, Metrics),
     Output = render_all(),
     ets:insert(?TABLE, {metrics_output, Output}),
     ok.
 
+export(metrics, Metrics, Resource, State) ->
+    export(Metrics, Resource, State).
+
 force_flush() ->
     ok.
+
+shutdown(_State) ->
+    shutdown().
 
 shutdown() ->
     case ets:info(?TABLE) of
@@ -44,7 +63,7 @@ get_metrics() ->
     end.
 
 %%--------------------------------------------------------------------
-%% Internal - delta to cumulative accumulation
+%% Internal - accumulation into cumulative values
 %%--------------------------------------------------------------------
 
 accumulate_metric(#metric{name = Name, description = Desc, unit = Unit, data = Data}) ->
@@ -53,17 +72,21 @@ accumulate_metric(#metric{name = Name, description = Desc, unit = Unit, data = D
     ets:insert(?TABLE, {metric_meta(PromName), Desc, Type, Unit, Data}),
     accumulate_data(PromName, Data).
 
-accumulate_data(PromName, #histogram{datapoints = Datapoints}) ->
-    lists:foreach(fun(DP) -> accumulate_histogram(PromName, DP) end, Datapoints);
-accumulate_data(PromName, #sum{datapoints = Datapoints, is_monotonic = true}) ->
-    lists:foreach(fun(DP) -> accumulate_counter(PromName, DP) end, Datapoints);
-accumulate_data(PromName, #sum{datapoints = Datapoints, is_monotonic = false}) ->
-    %% Updown counters: store latest value, don't accumulate
-    lists:foreach(fun(DP) -> store_gauge(PromName, DP) end, Datapoints);
+accumulate_data(PromName, #histogram{datapoints = Datapoints, aggregation_temporality = T}) ->
+    lists:foreach(fun(DP) -> accumulate_histogram(PromName, T, DP) end, Datapoints);
+accumulate_data(PromName, #sum{
+    datapoints = Datapoints, is_monotonic = Monotonic, aggregation_temporality = T
+}) ->
+    Kind =
+        case Monotonic of
+            true -> counter;
+            false -> gauge
+        end,
+    lists:foreach(fun(DP) -> accumulate_sum(PromName, Kind, T, DP) end, Datapoints);
 accumulate_data(PromName, #gauge{datapoints = Datapoints}) ->
-    lists:foreach(fun(DP) -> store_gauge(PromName, DP) end, Datapoints).
+    lists:foreach(fun(DP) -> store_value(PromName, gauge, DP) end, Datapoints).
 
-accumulate_histogram(PromName, #histogram_datapoint{
+accumulate_histogram(PromName, ?TEMPORALITY_DELTA, #histogram_datapoint{
     attributes = Attrs,
     count = Count,
     sum = Sum,
@@ -79,20 +102,31 @@ accumulate_histogram(PromName, #histogram_datapoint{
             );
         [] ->
             ets:insert(?TABLE, {Key, {hist, Count, Sum, BucketCounts, Bounds}})
-    end.
+    end;
+accumulate_histogram(PromName, _Cumulative, #histogram_datapoint{
+    attributes = Attrs,
+    count = Count,
+    sum = Sum,
+    bucket_counts = BucketCounts,
+    explicit_bounds = Bounds
+}) ->
+    ets:insert(?TABLE, {
+        {dp, PromName, normalize_attrs(Attrs)}, {hist, Count, Sum, BucketCounts, Bounds}
+    }).
 
-accumulate_counter(PromName, #datapoint{attributes = Attrs, value = Value}) ->
+accumulate_sum(PromName, Kind, ?TEMPORALITY_DELTA, #datapoint{attributes = Attrs, value = Value}) ->
     Key = {dp, PromName, normalize_attrs(Attrs)},
     case ets:lookup(?TABLE, Key) of
-        [{Key, {counter, PrevValue}}] ->
-            ets:insert(?TABLE, {Key, {counter, add_num(PrevValue, Value)}});
-        [] ->
-            ets:insert(?TABLE, {Key, {counter, Value}})
-    end.
+        [{Key, {Kind, PrevValue}}] ->
+            ets:insert(?TABLE, {Key, {Kind, add_num(PrevValue, Value)}});
+        _ ->
+            ets:insert(?TABLE, {Key, {Kind, Value}})
+    end;
+accumulate_sum(PromName, Kind, _Cumulative, DP) ->
+    store_value(PromName, Kind, DP).
 
-store_gauge(PromName, #datapoint{attributes = Attrs, value = Value}) ->
-    Key = {dp, PromName, normalize_attrs(Attrs)},
-    ets:insert(?TABLE, {Key, {gauge, Value}}).
+store_value(PromName, Kind, #datapoint{attributes = Attrs, value = Value}) ->
+    ets:insert(?TABLE, {{dp, PromName, normalize_attrs(Attrs)}, {Kind, Value}}).
 
 add_num(A, B) when is_number(A), is_number(B) -> A + B;
 add_num(undefined, B) -> B;
@@ -153,10 +187,7 @@ render_datapoint(Name, Attrs, {hist, Count, Sum, BucketCounts, Bounds}) ->
     SumLine = [Name, <<"_sum">>, Labels, <<" ">>, format_number(Sum), <<"\n">>],
     CountLine = [Name, <<"_count">>, Labels, <<" ">>, format_number(Count), <<"\n">>],
     BucketLines ++ [SumLine, CountLine];
-render_datapoint(Name, Attrs, {counter, Value}) ->
-    Labels = format_labels(Attrs),
-    [[Name, Labels, <<" ">>, format_number(Value), <<"\n">>]];
-render_datapoint(Name, Attrs, {gauge, Value}) ->
+render_datapoint(Name, Attrs, {Kind, Value}) when Kind =:= counter; Kind =:= gauge ->
     Labels = format_labels(Attrs),
     [[Name, Labels, <<" ">>, format_number(Value), <<"\n">>]].
 
