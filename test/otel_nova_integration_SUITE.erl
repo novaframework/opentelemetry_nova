@@ -10,6 +10,7 @@
     instrumentation_failure_logs_no_request_data/1,
     prometheus_endpoint_serves_recorded_metrics/1,
     active_requests_gauge_tracks_in_flight_requests/1,
+    active_requests_return_to_zero_when_metric_recording_fails/1,
     supervised_prom_server_stops_listener_with_app/1,
     setup_prom_server_survives_app_restart/1,
     catch_all_paths_share_one_route_series/1,
@@ -40,6 +41,7 @@ all() ->
         instrumentation_failure_logs_no_request_data,
         prometheus_endpoint_serves_recorded_metrics,
         active_requests_gauge_tracks_in_flight_requests,
+        active_requests_return_to_zero_when_metric_recording_fails,
         supervised_prom_server_stops_listener_with_app,
         setup_prom_server_survives_app_restart,
         catch_all_paths_share_one_route_series,
@@ -113,7 +115,7 @@ controller_span_is_child_of_server_span(_Config) ->
     ?assertEqual(~"GET /child", Server#span.name),
     ?assertEqual(Server#span.trace_id, Child#span.trace_id),
     ?assertEqual(Server#span.span_id, Child#span.parent_span_id),
-    Attrs = otel_attributes:map(Server#span.attributes),
+    Attrs = otel_nova_test_util:span_attrs(Server),
     ?assertEqual(~"/child", maps:get('http.route', Attrs)),
     ?assertEqual(~"test_app", maps:get('nova.app', Attrs)).
 
@@ -122,7 +124,7 @@ sendfile_response_is_served_and_measured(Config) ->
     {200, Body} = get("/static", []),
     ?assertEqual(StaticBody, Body),
     [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
-    Attrs = otel_attributes:map(Server#span.attributes),
+    Attrs = otel_nova_test_util:span_attrs(Server),
     ?assertEqual(200, maps:get('http.response.status_code', Attrs)),
     Size = integer_to_binary(byte_size(StaticBody)),
     await_metric(
@@ -136,12 +138,8 @@ sendfile_response_logs_no_request_data(_Config) ->
     assert_no_log_mentions("s3cr3t").
 
 instrumentation_failure_logs_no_request_data(_Config) ->
-    Req = #{
-        method => ~"GET",
-        headers => #{~"cookie" => list_to_binary(?COOKIE)},
-        pid => self(),
-        streamid => 1
-    },
+    Req0 = otel_nova_test_util:stream_req(~"GET", ~"/"),
+    Req = Req0#{headers => #{~"cookie" => list_to_binary(?COOKIE)}},
     {[], State0} = otel_nova_stream_h:init(1, Req, #{stream_handlers => []}),
     {[], State1} = otel_nova_stream_h:info(1, {response, 200, #{}, {not_a_body}}, State0),
     ok = otel_nova_stream_h:terminate(1, normal, State1),
@@ -169,19 +167,8 @@ prometheus_endpoint_serves_recorded_metrics(_Config) ->
 
 active_requests_gauge_tracks_in_flight_requests(_Config) ->
     ok = application:set_env(opentelemetry_nova, metric_server_hosts, [~"active.test"]),
-    Req = #{
-        method => ~"GET",
-        path => ~"/active",
-        scheme => ~"http",
-        host => ~"active.test",
-        port => 8080,
-        version => 'HTTP/1.1',
-        headers => #{},
-        peer => {{127, 0, 0, 1}, 1},
-        sock => {{127, 0, 0, 1}, 8080},
-        pid => self(),
-        streamid => 1
-    },
+    Req0 = otel_nova_test_util:stream_req(~"GET", ~"/active"),
+    Req = Req0#{host => ~"active.test"},
     {[], A} = otel_nova_stream_h:init(1, Req, #{stream_handlers => []}),
     otel_meter_server:force_flush(),
     {[], B} = otel_nova_stream_h:init(2, Req, #{stream_handlers => []}),
@@ -191,6 +178,16 @@ active_requests_gauge_tracks_in_flight_requests(_Config) ->
     otel_nova_stream_h:terminate(2, normal, B),
     otel_meter_server:force_flush(),
     ?assertEqual(~"0", active_requests(~"active.test")).
+
+active_requests_return_to_zero_when_metric_recording_fails(_Config) ->
+    ok = application:set_env(opentelemetry_nova, metric_server_hosts, [~"leak.test"]),
+    Req0 = otel_nova_test_util:stream_req(~"GET", ~"/leak"),
+    {[], State} = otel_nova_stream_h:init(1, Req0#{host => ~"leak.test"}, #{stream_handlers => []}),
+    otel_meter_server:force_flush(),
+    ?assertEqual(~"1", active_requests(~"leak.test")),
+    otel_nova_stream_h:terminate(1, normal, without_start_time(State)),
+    otel_meter_server:force_flush(),
+    ?assertEqual(~"0", active_requests(~"leak.test")).
 
 supervised_prom_server_stops_listener_with_app(_Config) ->
     load_test_app(supervised),
@@ -302,8 +299,8 @@ invalid_forwarded_for_still_records_request(_Config) ->
     Spans = [S || S = #span{kind = server} <- receive_spans(4)],
     ?assertEqual(2, length(Spans)),
     [
-        ?assertEqual(~"127.0.0.1", maps:get('client.address', otel_attributes:map(A)))
-     || #span{attributes = A} <- Spans
+        ?assertEqual(~"127.0.0.1", maps:get('client.address', otel_nova_test_util:span_attrs(S)))
+     || S <- Spans
     ],
     await_metric(
         ~"http_server_request_duration_seconds_count\\{[^}]*server_address=\"xff.test\"[^}]*\\} 2"
@@ -339,6 +336,12 @@ load_test_app(Mode) ->
             {env, [{mode, Mode}, {prometheus, #{port => ?METRICS_PORT}}]}
         ]}
     ).
+
+%% Clearing req_start makes the duration calculation in record_metrics raise.
+-spec without_start_time(dynamic()) -> dynamic().
+without_start_time(State) ->
+    ReqStartField = 6,
+    setelement(ReqStartField, State, undefined).
 
 raw(Request) ->
     {ok, Socket} = gen_tcp:connect("127.0.0.1", ?HTTP_PORT, [binary, {active, false}]),

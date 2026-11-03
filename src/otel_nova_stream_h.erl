@@ -158,7 +158,11 @@ finish_request(#state{span_ctx = undefined}) ->
 finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode}) ->
     set_status_attributes(SpanCtx, StatusCode),
     _ = otel_span:end_span(SpanCtx),
+    safely(terminate, fun() -> end_active_request(State) end, ok),
     safely(terminate, fun() -> record_metrics(State) end, ok).
+
+end_active_request(#state{metric_attrs = MetricAttrs}) ->
+    ?updown_counter_add('http.server.active_requests', -1, MetricAttrs).
 
 record_metrics(#state{
     status_code = StatusCode,
@@ -174,7 +178,6 @@ record_metrics(#state{
     ?histogram_record('http.server.request.duration', Duration, FinalAttrs),
     record_if_positive('http.server.request.body.size', ReqBodyLen, FinalAttrs),
     record_if_positive('http.server.response.body.size', RespBodyLen, FinalAttrs),
-    ?updown_counter_add('http.server.active_requests', -1, MetricAttrs),
     ok.
 
 set_status_attributes(_SpanCtx, undefined) ->
@@ -216,6 +219,7 @@ safely(Callback, Fun, Default) ->
     end.
 
 -doc false.
+-spec log_failure(atom(), error | exit | throw, term(), [tuple()]) -> ok.
 log_failure(Callback, Class, Reason, Stacktrace) ->
     ?LOG_WARNING(#{
         what => otel_nova_instrumentation_failed,
@@ -223,7 +227,8 @@ log_failure(Callback, Class, Reason, Stacktrace) ->
         class => Class,
         reason => reason_tag(Reason),
         stacktrace => [strip_args(Frame) || Frame <- Stacktrace]
-    }).
+    }),
+    ok.
 
 reason_tag(Reason) when is_atom(Reason) -> Reason;
 reason_tag(Reason) when is_tuple(Reason), is_atom(element(1, Reason)) -> element(1, Reason);
