@@ -86,6 +86,22 @@ Traces, exported over OTLP:
 ]}
 ```
 
+## Excluding requests from tracing
+
+`otel_nova_sampler` drops the server span of excluded requests:
+
+```erlang
+{opentelemetry, [
+    {sampler, {parent_based, #{root => {otel_nova_sampler, [~"GET /metrics", ~"GET /healthz"]}}}}
+]}
+```
+
+The sampler decides when the server span starts, before Nova has routed the
+request. Entries are `"METHOD /path"` and match the raw request path (without
+the query string), not the route template, so `~"GET /users/:id"` does not match
+`/users/42`. With `parent_based`, a request carrying a sampled `traceparent`
+follows its parent.
+
 ## Prometheus metrics
 
 Configure a metric reader that exports to `otel_nova_prom_exporter`:
@@ -161,6 +177,7 @@ Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
 - **`otel_nova_plugin`**: Nova plugin that attaches the trace context in the request process and adds route and controller info
 - **`otel_nova_prom_exporter`**: metric exporter rendering the Prometheus text format
 - **`otel_nova_prom_server`**: HTTP listener for Prometheus scraping
+- **`otel_nova_sampler`**: sampler that drops server spans of excluded requests
 
 ## License
 
