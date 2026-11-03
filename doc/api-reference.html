@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ExDoc v0.39.1">
-    <meta name="project" content="opentelemetry_nova v0.2.2">
+    <meta name="generator" content="ExDoc v0.40.3">
+    <meta name="project" content="opentelemetry_nova v0.4.0+build.34.ref93e5245">
 
 
-    <title>API Reference — opentelemetry_nova v0.2.2</title>
+    <title>API Reference — opentelemetry_nova v0.4.0+build.34.ref93e5245</title>
 
-    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+    <link rel="stylesheet" href="dist/html-erlang-KCHZLXSC.css" />
 
-    <script defer src="dist/sidebar_items-0F34C0BA.js"></script>
+    <script defer src="dist/sidebar_items-18ACBAED.js"></script>
     <script defer src="docs_config.js"></script>
-    <script defer src="dist/html-HBZYRXZS.js"></script>
+    <script defer src="dist/html-Y2MUTVIN.js"></script>
 
   </head>
   <body>
@@ -37,11 +37,11 @@
 opentelemetry_nova
         </a>
         <div class="sidebar-projectVersion" translate="no">
-          v0.2.2
+          v0.4.0+build.34.ref93e5245
         </div>
       </div>
     </div>
-    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras="Pages"></ul>
   </div>
 </nav>
 
@@ -92,9 +92,10 @@ opentelemetry_nova
 
 <div id="top-content">
   <div class="heading-with-actions top-heading">
-    <h1>API Reference <small class="app-vsn">opentelemetry_nova v#0.2.2</small></h1>
+    <h1>API Reference <small class="app-vsn">opentelemetry_nova v#0.4.0+build.34.ref93e5245</small></h1>
 
-      <a href="https://github.com/novaframework/opentelemetry_nova" title="View Source" class="icon-action" rel="help">
+
+      <a href="https://github.com/novaframework/opentelemetry_nova" title="View Source" class="icon-action" rel="help nofollow">
         <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         <span class="sr-only">View Source</span>
       </a>
@@ -110,6 +111,8 @@ opentelemetry_nova
 
   </div>
 
+    <div class="summary-synopsis"><p>OpenTelemetry instrumentation for Nova. See the README for the full setup.</p></div>
+
 </div>
 <div class="summary-row">
   <div class="summary-signature">
@@ -117,12 +120,17 @@ opentelemetry_nova
 
   </div>
 
+    <div class="summary-synopsis"><p>Nova plugin that links the request process to the server span created by
+<code class="inline">otel_nova_stream_h</code> and enriches that span with routing information.</p></div>
+
 </div>
 <div class="summary-row">
   <div class="summary-signature">
     <a href="otel_nova_prom_exporter.html" translate="no">otel_nova_prom_exporter</a>
 
   </div>
+
+    <div class="summary-synopsis"><p>Metric exporter that renders OpenTelemetry metrics in the Prometheus text format.</p></div>
 
 </div>
 <div class="summary-row">
@@ -138,12 +146,27 @@ opentelemetry_nova
 
   </div>
 
+    <div class="summary-synopsis"><p>HTTP listener serving <code class="inline">otel_nova_prom_exporter</code> output on <code class="inline">/metrics</code>.</p></div>
+
+</div>
+<div class="summary-row">
+  <div class="summary-signature">
+    <a href="otel_nova_sampler.html" translate="no">otel_nova_sampler</a>
+
+  </div>
+
+    <div class="summary-synopsis"><p>Sampler that drops server spans for excluded requests, such as health checks
+and Prometheus scrapes.</p></div>
+
 </div>
 <div class="summary-row">
   <div class="summary-signature">
     <a href="otel_nova_stream_h.html" translate="no">otel_nova_stream_h</a>
 
   </div>
+
+    <div class="summary-synopsis"><p>Cowboy stream handler that creates the HTTP server span and records the HTTP
+server metrics.</p></div>
 
 </div>
 
@@ -153,34 +176,37 @@ opentelemetry_nova
 
 </div>
     <footer class="footer">
-      <p>
+
+        <p>
+
+            <span class="line">
+              <a href="https://hex.pm/packages/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Package</a>
+
+              <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Preview</a>
+
+            </span>
 
           <span class="line">
-            <a href="https://hex.pm/packages/opentelemetry_nova/0.2.2" class="footer-hex-package">Hex Package</a>
+            <button class="a-main footer-button display-quick-switch" title="Go to package docs">
+              Go to package docs
+            </button>
 
-            <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.2.2">Hex Preview</a>
+
+              <a href="opentelemetry_nova.epub">
+                Download ePub version
+              </a>
 
           </span>
+        </p>
 
-        <span class="line">
-          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
-            Search HexDocs
-          </button>
+        <p class="built-using">
+          Built using
+          <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.40.3) for the
 
-            <a href="opentelemetry_nova.epub" title="ePub version">
-              Download ePub version
-            </a>
+            <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
 
-        </span>
-      </p>
+        </p>
 
-      <p class="built-using">
-        Built using
-        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
-
-          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
-
-      </p>
 
     </footer>
   </div>

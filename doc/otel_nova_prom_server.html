@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ExDoc v0.39.1">
-    <meta name="project" content="opentelemetry_nova v0.2.2">
+    <meta name="generator" content="ExDoc v0.40.3">
+    <meta name="project" content="opentelemetry_nova v0.4.0+build.34.ref93e5245">
 
 
-    <title>otel_nova_prom_server — opentelemetry_nova v0.2.2</title>
+    <title>otel_nova_prom_server — opentelemetry_nova v0.4.0+build.34.ref93e5245</title>
 
-    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+    <link rel="stylesheet" href="dist/html-erlang-KCHZLXSC.css" />
 
-    <script defer src="dist/sidebar_items-0F34C0BA.js"></script>
+    <script defer src="dist/sidebar_items-18ACBAED.js"></script>
     <script defer src="docs_config.js"></script>
-    <script defer src="dist/html-HBZYRXZS.js"></script>
+    <script defer src="dist/html-Y2MUTVIN.js"></script>
 
   </head>
   <body>
@@ -37,11 +37,11 @@
 opentelemetry_nova
         </a>
         <div class="sidebar-projectVersion" translate="no">
-          v0.2.2
+          v0.4.0+build.34.ref93e5245
         </div>
       </div>
     </div>
-    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras="Pages"></ul>
   </div>
 </nav>
 
@@ -94,11 +94,14 @@ opentelemetry_nova
   <div class="heading-with-actions top-heading">
     <h1>
       <span translate="no">otel_nova_prom_server</span> 
-      <small class="app-vsn" translate="no">(opentelemetry_nova v0.2.2)</small>
+      <small class="app-vsn" translate="no">(opentelemetry_nova v0.4.0+build.34.ref93e5245)</small>
 
     </h1>
 
-      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L1" title="View Source" class="icon-action" rel="help">
+
+
+
+      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L1" title="View Source" class="icon-action" rel="help nofollow">
         <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         <span class="sr-only">View Source</span>
       </a>
@@ -106,19 +109,38 @@ opentelemetry_nova
   </div>
 
 
+    <section id="moduledoc">
+<p>HTTP listener serving <code class="inline">otel_nova_prom_exporter</code> output on <code class="inline">/metrics</code>.</p><p>Start it from your supervision tree with <a href="#child_spec/1"><code class="inline">child_spec/1</code></a> so the listener is
+stopped together with your application:</p><pre><code class="makeup erlang" translate="no"><span class="nf">init</span><span class="p" data-group-id="8575666462-1">(</span><span class="p" data-group-id="8575666462-2">[</span><span class="p" data-group-id="8575666462-2">]</span><span class="p" data-group-id="8575666462-1">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w">
+    </span><span class="n">Children</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p" data-group-id="8575666462-3">[</span><span class="nc">otel_nova_prom_server</span><span class="p">:</span><span class="nf">child_spec</span><span class="p" data-group-id="8575666462-4">(</span><span class="p" data-group-id="8575666462-5">#{</span><span class="ss">port</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="mi">9464</span><span class="p" data-group-id="8575666462-5">}</span><span class="p" data-group-id="8575666462-4">)</span><span class="p" data-group-id="8575666462-3">]</span><span class="p">,</span><span class="w">
+    </span><span class="p" data-group-id="8575666462-6">{</span><span class="ss">ok</span><span class="p">,</span><span class="w"> </span><span class="p" data-group-id="8575666462-7">{</span><span class="p" data-group-id="8575666462-8">#{</span><span class="ss">strategy</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="ss">one_for_one</span><span class="p" data-group-id="8575666462-8">}</span><span class="p">,</span><span class="w"> </span><span class="n">Children</span><span class="p" data-group-id="8575666462-7">}</span><span class="p" data-group-id="8575666462-6">}</span><span class="p">.</span></code></pre><p>The listener binds <code class="inline">127.0.0.1</code> and speaks HTTP/1.1 only, and <code class="inline">/metrics</code> has
+no authentication. Set <code class="inline">ip</code> (for example <code class="inline">{0, 0, 0, 0}</code>) to let a scraper on
+another host reach it, and restrict who can connect at the network level.</p>
+    </section>
+
 </div>
 
   <section id="summary" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#summary">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Summary</span>
-    </h1>
+    </h2>
 <div class="summary-functions summary">
-  <h2>
+  <h3>
     <a href="#functions">Functions</a>
-  </h2>
+  </h3>
+
+    <div class="summary-row">
+      <div class="summary-signature">
+        <a href="#child_spec/1" data-no-tooltip="" translate="no">child_spec(Opts)</a>
+
+      </div>
+
+        <div class="summary-synopsis"><p>Child specification for running the server under a supervisor.</p></div>
+
+    </div>
 
     <div class="summary-row">
       <div class="summary-signature">
@@ -158,6 +180,8 @@ opentelemetry_nova
 
       </div>
 
+        <div class="summary-synopsis"><p>Starts the server and its listener. <code class="inline">port</code> defaults to 9464 and <code class="inline">ip</code> to <code class="inline">{127, 0, 0, 1}</code>.</p></div>
+
     </div>
 
     <div class="summary-row">
@@ -182,14 +206,42 @@ opentelemetry_nova
 
 
   <section id="functions" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#functions">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Functions</span>
-    </h1>
+    </h2>
 
     <div class="functions-list">
+<section class="detail" id="child_spec/1">
+
+  <div class="detail-header">
+    <a href="#child_spec/1" class="detail-link" data-no-tooltip="" aria-label="Link to this function">
+      <i class="ri-link-m" aria-hidden="true"></i>
+    </a>
+    <div class="heading-with-actions">
+      <h1 class="signature" translate="no">child_spec(Opts)</h1>
+
+
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L36" class="icon-action" rel="help nofollow" aria-label="View Source">
+          <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        </a>
+
+    </div>
+  </div>
+
+  <section class="docstring">
+
+      <div class="specs">
+
+          <pre translate="no"><span class="attribute">-spec</span> child_spec(<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:map/0">map</a>()) -> <a href="https://www.erlang.org/doc/apps/stdlib/supervisor.html#t:child_spec/0">supervisor:child_spec</a>().</pre>
+
+      </div>
+
+<p>Child specification for running the server under a supervisor.</p>
+  </section>
+</section>
 <section class="detail" id="handle_call/3">
 
   <div class="detail-header">
@@ -200,7 +252,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">handle_call(Request, From, State)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L31" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L62" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -222,7 +274,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">handle_cast(Msg, State)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L34" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L65" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -244,7 +296,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">handle_info(Info, State)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L37" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L68" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -266,7 +318,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">init(Opts)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L19" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L48" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -288,7 +340,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">start_link(Opts)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L9" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L28" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -297,7 +349,7 @@ opentelemetry_nova
 
   <section class="docstring">
 
-
+<p>Starts the server and its listener. <code class="inline">port</code> defaults to 9464 and <code class="inline">ip</code> to <code class="inline">{127, 0, 0, 1}</code>.</p>
   </section>
 </section>
 <section class="detail" id="stop/0">
@@ -310,7 +362,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">stop()</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L12" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L31" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -332,7 +384,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">terminate(Reason, State)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_server.erl#L40" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_server.erl#L71" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -349,34 +401,37 @@ opentelemetry_nova
   </section>
 
     <footer class="footer">
-      <p>
+
+        <p>
+
+            <span class="line">
+              <a href="https://hex.pm/packages/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Package</a>
+
+              <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Preview</a>
+
+            </span>
 
           <span class="line">
-            <a href="https://hex.pm/packages/opentelemetry_nova/0.2.2" class="footer-hex-package">Hex Package</a>
+            <button class="a-main footer-button display-quick-switch" title="Go to package docs">
+              Go to package docs
+            </button>
 
-            <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.2.2">Hex Preview</a>
+
+              <a href="opentelemetry_nova.epub">
+                Download ePub version
+              </a>
 
           </span>
+        </p>
 
-        <span class="line">
-          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
-            Search HexDocs
-          </button>
+        <p class="built-using">
+          Built using
+          <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.40.3) for the
 
-            <a href="opentelemetry_nova.epub" title="ePub version">
-              Download ePub version
-            </a>
+            <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
 
-        </span>
-      </p>
+        </p>
 
-      <p class="built-using">
-        Built using
-        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
-
-          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
-
-      </p>
 
     </footer>
   </div>

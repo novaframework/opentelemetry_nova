@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ExDoc v0.39.1">
-    <meta name="project" content="opentelemetry_nova v0.2.2">
+    <meta name="generator" content="ExDoc v0.40.3">
+    <meta name="project" content="opentelemetry_nova v0.4.0+build.34.ref93e5245">
 
 
-    <title>otel_nova_prom_exporter — opentelemetry_nova v0.2.2</title>
+    <title>otel_nova_prom_exporter — opentelemetry_nova v0.4.0+build.34.ref93e5245</title>
 
-    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+    <link rel="stylesheet" href="dist/html-erlang-KCHZLXSC.css" />
 
-    <script defer src="dist/sidebar_items-0F34C0BA.js"></script>
+    <script defer src="dist/sidebar_items-18ACBAED.js"></script>
     <script defer src="docs_config.js"></script>
-    <script defer src="dist/html-HBZYRXZS.js"></script>
+    <script defer src="dist/html-Y2MUTVIN.js"></script>
 
   </head>
   <body>
@@ -37,11 +37,11 @@
 opentelemetry_nova
         </a>
         <div class="sidebar-projectVersion" translate="no">
-          v0.2.2
+          v0.4.0+build.34.ref93e5245
         </div>
       </div>
     </div>
-    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras="Pages"></ul>
   </div>
 </nav>
 
@@ -94,11 +94,14 @@ opentelemetry_nova
   <div class="heading-with-actions top-heading">
     <h1>
       <span translate="no">otel_nova_prom_exporter</span> 
-      <small class="app-vsn" translate="no">(opentelemetry_nova v0.2.2)</small>
+      <small class="app-vsn" translate="no">(opentelemetry_nova v0.4.0+build.34.ref93e5245)</small>
 
     </h1>
 
-      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_exporter.erl#L1" title="View Source" class="icon-action" rel="help">
+
+
+
+      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L1" title="View Source" class="icon-action" rel="help nofollow">
         <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         <span class="sr-only">View Source</span>
       </a>
@@ -106,23 +109,44 @@ opentelemetry_nova
   </div>
 
 
+    <section id="moduledoc">
+<p>Metric exporter that renders OpenTelemetry metrics in the Prometheus text format.</p><p>Configure it as the exporter of an <code class="inline">otel_metric_reader</code> and serve the result
+with <code class="inline">otel_nova_prom_server</code> (or <code class="inline">otel_nova_prom_handler</code> on a listener of your
+own). Delta datapoints are accumulated into cumulative values, cumulative
+datapoints replace the stored value, so the output is correct for either
+reader temporality.</p><p>Each metric keeps at most 2000 series. Datapoints for further attribute sets
+are added to one overflow series labelled <code class="inline">otel_metric_overflow=&quot;true&quot;</code>, so
+an unexpected source of label values cannot grow the table without bound.
+Label values that are not valid UTF-8 are rendered as <code class="inline">_INVALID_UTF8</code>.</p><p>The table is written only by the process that called <a href="#init/1"><code class="inline">init/1</code></a>, which is the
+metric reader.</p><p>Implements the exporter API of both opentelemetry_experimental 0.6
+(<a href="#export/3"><code class="inline">export/3</code></a>, <a href="#shutdown/1"><code class="inline">shutdown/1</code></a>) and 0.5 (<a href="#export/4"><code class="inline">export/4</code></a>, <a href="#shutdown/1"><code class="inline">shutdown/1</code></a>).</p>
+    </section>
+
 </div>
 
   <section id="summary" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#summary">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Summary</span>
-    </h1>
+    </h2>
 <div class="summary-functions summary">
-  <h2>
+  <h3>
     <a href="#functions">Functions</a>
-  </h2>
+  </h3>
 
     <div class="summary-row">
       <div class="summary-signature">
-        <a href="#export/4" data-no-tooltip="" translate="no">export(_, Metrics, Resource, State)</a>
+        <a href="#export/3" data-no-tooltip="" translate="no">export(Metrics, Resource, State)</a>
+
+      </div>
+
+    </div>
+
+    <div class="summary-row">
+      <div class="summary-signature">
+        <a href="#export/4" data-no-tooltip="" translate="no">export/4</a>
 
       </div>
 
@@ -160,20 +184,50 @@ opentelemetry_nova
 
     </div>
 
+    <div class="summary-row">
+      <div class="summary-signature">
+        <a href="#shutdown/1" data-no-tooltip="" translate="no">shutdown(State)</a>
+
+      </div>
+
+    </div>
+
 </div>
 
   </section>
 
 
   <section id="functions" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#functions">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Functions</span>
-    </h1>
+    </h2>
 
     <div class="functions-list">
+<section class="detail" id="export/3">
+
+  <div class="detail-header">
+    <a href="#export/3" class="detail-link" data-no-tooltip="" aria-label="Link to this function">
+      <i class="ri-link-m" aria-hidden="true"></i>
+    </a>
+    <div class="heading-with-actions">
+      <h1 class="signature" translate="no">export(Metrics, Resource, State)</h1>
+
+
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L50" class="icon-action" rel="help nofollow" aria-label="View Source">
+          <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        </a>
+
+    </div>
+  </div>
+
+  <section class="docstring">
+
+
+  </section>
+</section>
 <section class="detail" id="export/4">
 
   <div class="detail-header">
@@ -181,10 +235,10 @@ opentelemetry_nova
       <i class="ri-link-m" aria-hidden="true"></i>
     </a>
     <div class="heading-with-actions">
-      <h1 class="signature" translate="no">export(_, Metrics, Resource, State)</h1>
+      <h1 class="signature" translate="no">export/4</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_exporter.erl#L19" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L56" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -206,7 +260,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">force_flush()</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_exporter.erl#L25" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L59" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -228,7 +282,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">get_metrics()</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_exporter.erl#L35" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L72" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -250,7 +304,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">init(Config)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_exporter.erl#L10" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L34" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -272,7 +326,29 @@ opentelemetry_nova
       <h1 class="signature" translate="no">shutdown()</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_prom_exporter.erl#L28" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L65" class="icon-action" rel="help nofollow" aria-label="View Source">
+          <i class="ri-code-s-slash-line" aria-hidden="true"></i>
+        </a>
+
+    </div>
+  </div>
+
+  <section class="docstring">
+
+
+  </section>
+</section>
+<section class="detail" id="shutdown/1">
+
+  <div class="detail-header">
+    <a href="#shutdown/1" class="detail-link" data-no-tooltip="" aria-label="Link to this function">
+      <i class="ri-link-m" aria-hidden="true"></i>
+    </a>
+    <div class="heading-with-actions">
+      <h1 class="signature" translate="no">shutdown(State)</h1>
+
+
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_prom_exporter.erl#L62" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -289,34 +365,37 @@ opentelemetry_nova
   </section>
 
     <footer class="footer">
-      <p>
+
+        <p>
+
+            <span class="line">
+              <a href="https://hex.pm/packages/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Package</a>
+
+              <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Preview</a>
+
+            </span>
 
           <span class="line">
-            <a href="https://hex.pm/packages/opentelemetry_nova/0.2.2" class="footer-hex-package">Hex Package</a>
+            <button class="a-main footer-button display-quick-switch" title="Go to package docs">
+              Go to package docs
+            </button>
 
-            <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.2.2">Hex Preview</a>
+
+              <a href="opentelemetry_nova.epub">
+                Download ePub version
+              </a>
 
           </span>
+        </p>
 
-        <span class="line">
-          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
-            Search HexDocs
-          </button>
+        <p class="built-using">
+          Built using
+          <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.40.3) for the
 
-            <a href="opentelemetry_nova.epub" title="ePub version">
-              Download ePub version
-            </a>
+            <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
 
-        </span>
-      </p>
+        </p>
 
-      <p class="built-using">
-        Built using
-        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
-
-          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
-
-      </p>
 
     </footer>
   </div>

@@ -1,14 +1,14 @@
 404.html
 api-reference.html
-dist/html-HBZYRXZS.js
-dist/html-erlang-7YNYEB7F.css
+dist/html-Y2MUTVIN.js
+dist/html-erlang-KCHZLXSC.css
 dist/lato-latin-400-normal-W7754I4D.woff2
 dist/lato-latin-700-normal-2XVSBPG4.woff2
 dist/lato-latin-ext-400-normal-N27NCBWW.woff2
 dist/lato-latin-ext-700-normal-Q2L5DVMW.woff2
-dist/remixicon-QPNJX265.woff2
-dist/search_data-1618DDBA.js
-dist/sidebar_items-0F34C0BA.js
+dist/remixicon-ZWU5GQ4X.woff2
+dist/search_data-4C318ECF.js
+dist/sidebar_items-18ACBAED.js
 index.html
 license.html
 opentelemetry_nova.html
@@ -16,6 +16,7 @@ otel_nova_plugin.html
 otel_nova_prom_exporter.html
 otel_nova_prom_handler.html
 otel_nova_prom_server.html
+otel_nova_sampler.html
 otel_nova_stream_h.html
 readme.html
 search.html

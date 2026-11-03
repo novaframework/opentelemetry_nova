@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ExDoc v0.39.1">
-    <meta name="project" content="opentelemetry_nova v0.2.2">
+    <meta name="generator" content="ExDoc v0.40.3">
+    <meta name="project" content="opentelemetry_nova v0.4.0+build.34.ref93e5245">
 
 
-    <title>otel_nova_plugin — opentelemetry_nova v0.2.2</title>
+    <title>otel_nova_plugin — opentelemetry_nova v0.4.0+build.34.ref93e5245</title>
 
-    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+    <link rel="stylesheet" href="dist/html-erlang-KCHZLXSC.css" />
 
-    <script defer src="dist/sidebar_items-0F34C0BA.js"></script>
+    <script defer src="dist/sidebar_items-18ACBAED.js"></script>
     <script defer src="docs_config.js"></script>
-    <script defer src="dist/html-HBZYRXZS.js"></script>
+    <script defer src="dist/html-Y2MUTVIN.js"></script>
 
   </head>
   <body>
@@ -37,11 +37,11 @@
 opentelemetry_nova
         </a>
         <div class="sidebar-projectVersion" translate="no">
-          v0.2.2
+          v0.4.0+build.34.ref93e5245
         </div>
       </div>
     </div>
-    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras="Pages"></ul>
   </div>
 </nav>
 
@@ -94,11 +94,14 @@ opentelemetry_nova
   <div class="heading-with-actions top-heading">
     <h1>
       <span translate="no">otel_nova_plugin</span> 
-      <small class="app-vsn" translate="no">(opentelemetry_nova v0.2.2)</small>
+      <small class="app-vsn" translate="no">(opentelemetry_nova v0.4.0+build.34.ref93e5245)</small>
 
     </h1>
 
-      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_plugin.erl#L1" title="View Source" class="icon-action" rel="help">
+
+
+
+      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_plugin.erl#L1" title="View Source" class="icon-action" rel="help nofollow">
         <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         <span class="sr-only">View Source</span>
       </a>
@@ -106,19 +109,33 @@ opentelemetry_nova
   </div>
 
 
+    <section id="moduledoc">
+<p>Nova plugin that links the request process to the server span created by
+<code class="inline">otel_nova_stream_h</code> and enriches that span with routing information.</p><p>Register it as the first <code class="inline">pre_request</code> plugin. It attaches the trace context
+the stream handler stored in the Req, so plugins that run after it,
+controllers and libraries such as opentelemetry_kura create child spans of
+the server span. It also sets <code class="inline">http.route</code>, the span name and the <code class="inline">nova.*</code>
+attributes, adds <code class="inline">trace_id</code>/<code class="inline">span_id</code> to the logger process metadata and
+reports the route to the stream handler for the HTTP metrics.</p><p><code class="inline">http.route</code> is the route template: bound segments become <code class="inline">:name</code> and the
+tail matched by a catch-all such as <code class="inline">/assets/[...]</code> becomes <code class="inline">[...]</code>. When the
+template cannot be determined the attribute is left out rather than set to
+the raw path, so the number of metric series stays bounded. Instrumentation
+failures are logged without request data and never fail the request.</p>
+    </section>
+
 </div>
 
   <section id="summary" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#summary">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Summary</span>
-    </h1>
+    </h2>
 <div class="summary-functions summary">
-  <h2>
+  <h3>
     <a href="#functions">Functions</a>
-  </h2>
+  </h3>
 
     <div class="summary-row">
       <div class="summary-signature">
@@ -150,12 +167,12 @@ opentelemetry_nova
 
 
   <section id="functions" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#functions">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Functions</span>
-    </h1>
+    </h2>
 
     <div class="functions-list">
 <section class="detail" id="plugin_info/0">
@@ -168,7 +185,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">plugin_info()</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_plugin.erl#L30" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_plugin.erl#L36" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -190,7 +207,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">post_request(Req, Env, Opts, State)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_plugin.erl#L27" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_plugin.erl#L33" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -212,7 +229,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">pre_request(Req, Env, Opts, State)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_plugin.erl#L8" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_plugin.erl#L24" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -229,34 +246,37 @@ opentelemetry_nova
   </section>
 
     <footer class="footer">
-      <p>
+
+        <p>
+
+            <span class="line">
+              <a href="https://hex.pm/packages/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Package</a>
+
+              <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Preview</a>
+
+            </span>
 
           <span class="line">
-            <a href="https://hex.pm/packages/opentelemetry_nova/0.2.2" class="footer-hex-package">Hex Package</a>
+            <button class="a-main footer-button display-quick-switch" title="Go to package docs">
+              Go to package docs
+            </button>
 
-            <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.2.2">Hex Preview</a>
+
+              <a href="opentelemetry_nova.epub">
+                Download ePub version
+              </a>
 
           </span>
+        </p>
 
-        <span class="line">
-          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
-            Search HexDocs
-          </button>
+        <p class="built-using">
+          Built using
+          <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.40.3) for the
 
-            <a href="opentelemetry_nova.epub" title="ePub version">
-              Download ePub version
-            </a>
+            <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
 
-        </span>
-      </p>
+        </p>
 
-      <p class="built-using">
-        Built using
-        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
-
-          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
-
-      </p>
 
     </footer>
   </div>

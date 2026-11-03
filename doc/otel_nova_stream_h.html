@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ExDoc v0.39.1">
-    <meta name="project" content="opentelemetry_nova v0.2.2">
+    <meta name="generator" content="ExDoc v0.40.3">
+    <meta name="project" content="opentelemetry_nova v0.4.0+build.34.ref93e5245">
 
 
-    <title>otel_nova_stream_h — opentelemetry_nova v0.2.2</title>
+    <title>otel_nova_stream_h — opentelemetry_nova v0.4.0+build.34.ref93e5245</title>
 
-    <link rel="stylesheet" href="dist/html-erlang-7YNYEB7F.css" />
+    <link rel="stylesheet" href="dist/html-erlang-KCHZLXSC.css" />
 
-    <script defer src="dist/sidebar_items-0F34C0BA.js"></script>
+    <script defer src="dist/sidebar_items-18ACBAED.js"></script>
     <script defer src="docs_config.js"></script>
-    <script defer src="dist/html-HBZYRXZS.js"></script>
+    <script defer src="dist/html-Y2MUTVIN.js"></script>
 
   </head>
   <body>
@@ -37,11 +37,11 @@
 opentelemetry_nova
         </a>
         <div class="sidebar-projectVersion" translate="no">
-          v0.2.2
+          v0.4.0+build.34.ref93e5245
         </div>
       </div>
     </div>
-    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras=""></ul>
+    <ul id="sidebar-list-nav" class="sidebar-list-nav" role="tablist" data-extras="Pages"></ul>
   </div>
 </nav>
 
@@ -94,11 +94,14 @@ opentelemetry_nova
   <div class="heading-with-actions top-heading">
     <h1>
       <span translate="no">otel_nova_stream_h</span> 
-      <small class="app-vsn" translate="no">(opentelemetry_nova v0.2.2)</small>
+      <small class="app-vsn" translate="no">(opentelemetry_nova v0.4.0+build.34.ref93e5245)</small>
 
     </h1>
 
-      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_stream_h.erl#L1" title="View Source" class="icon-action" rel="help">
+
+
+
+      <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_stream_h.erl#L1" title="View Source" class="icon-action" rel="help nofollow">
         <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         <span class="sr-only">View Source</span>
       </a>
@@ -106,23 +109,43 @@ opentelemetry_nova
   </div>
 
 
+    <section id="moduledoc">
+<p>Cowboy stream handler that creates the HTTP server span and records the HTTP
+server metrics.</p><p>Cowboy runs stream handlers in the connection process, while Nova middleware,
+plugins and controllers run in a separate request process. The handler
+therefore never touches the connection process context. It stores the request
+context in the Req under <code class="inline">otel_nova_ctx</code>, and <code class="inline">otel_nova_plugin</code> attaches it in
+the request process, so spans created there are children of the server span.</p><p>Instrumentation failures are logged without request data and never crash the
+stream, and the server span is started even when building its attributes
+fails.</p><p>Options, read from the <code class="inline">opentelemetry_nova</code> application environment:</p><ul><li><code class="inline">trust_forwarded_for</code> (default <code class="inline">false</code>): take <code class="inline">client.address</code> from the
+first <code class="inline">X-Forwarded-For</code> entry or the <code class="inline">Forwarded</code> header when it is a valid
+IP address. Otherwise it is the peer address.</li><li><code class="inline">metric_server_hosts</code> (default unset): a list of hosts recorded as the
+<code class="inline">server.address</code> metric attribute, together with the listener port as
+<code class="inline">server.port</code>. Other hosts are recorded as <code class="inline">_OTHER</code>. When unset, neither
+attribute is recorded on metrics.</li><li><code class="inline">trust_incoming_context</code> (default <code class="inline">true</code>): continue the trace context and
+baggage the client sends. When <code class="inline">false</code> the server span starts a new trace
+and links to the remote parent.</li></ul><p>The method is normalised to one of the nine standard methods or <code class="inline">_OTHER</code>, on
+both spans and metrics. Spans keep the sent value as
+<code class="inline">http.request.method_original</code> when it differs.</p>
+    </section>
+
 </div>
 
   <section id="summary" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#summary">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Summary</span>
-    </h1>
+    </h2>
 <div class="summary-functions summary">
-  <h2>
+  <h3>
     <a href="#functions">Functions</a>
-  </h2>
+  </h3>
 
     <div class="summary-row">
       <div class="summary-signature">
-        <a href="#data/4" data-no-tooltip="" translate="no">data(StreamID, IsFin, Data, State)</a>
+        <a href="#data/4" data-no-tooltip="" translate="no">data/4</a>
 
       </div>
 
@@ -138,7 +161,7 @@ opentelemetry_nova
 
     <div class="summary-row">
       <div class="summary-signature">
-        <a href="#info/3" data-no-tooltip="" translate="no">info(StreamID, Info, State)</a>
+        <a href="#info/3" data-no-tooltip="" translate="no">info/3</a>
 
       </div>
 
@@ -154,7 +177,7 @@ opentelemetry_nova
 
     <div class="summary-row">
       <div class="summary-signature">
-        <a href="#terminate/3" data-no-tooltip="" translate="no">terminate(StreamID, Reason, State)</a>
+        <a href="#terminate/3" data-no-tooltip="" translate="no">terminate/3</a>
 
       </div>
 
@@ -166,12 +189,12 @@ opentelemetry_nova
 
 
   <section id="functions" class="details-list">
-    <h1 class="section-heading">
+    <h2 class="section-heading">
       <a class="hover-link" href="#functions">
         <i class="ri-link-m" aria-hidden="true"></i>
       </a>
       <span class="text">Functions</span>
-    </h1>
+    </h2>
 
     <div class="functions-list">
 <section class="detail" id="data/4">
@@ -181,10 +204,10 @@ opentelemetry_nova
       <i class="ri-link-m" aria-hidden="true"></i>
     </a>
     <div class="heading-with-actions">
-      <h1 class="signature" translate="no">data(StreamID, IsFin, Data, State)</h1>
+      <h1 class="signature" translate="no">data/4</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_stream_h.erl#L49" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_stream_h.erl#L71" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -197,20 +220,20 @@ opentelemetry_nova
 
           <pre translate="no"><span class="attribute">-spec</span> data(<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:streamid/0">cowboy_stream:streamid</a>(),
            <a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:fin/0">cowboy_stream:fin</a>(),
-           <a href="https://hexdocs.pm/cowboy/cowboy_req.html#t:resp_body/0">cowboy_req:resp_body</a>(),
-           #state{next :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
+           <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>(),
+           #state{next :: undefined | {<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:module/0">module</a>(), <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:term/0">term</a>()},
                   span_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/opentelemetry.html#t:span_ctx/0">opentelemetry:span_ctx</a>() | undefined,
-                  otel_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/otel_ctx.html#t:t/0">otel_ctx:t</a>() | undefined,
                   status_code :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>() | undefined,
+                  http_route :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>() | undefined,
                   req_start :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>(),
                   req_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                   resp_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                   metric_attrs :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:map/0">map</a>()}) ->
               {<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:commands/0">cowboy_stream:commands</a>(),
-               #state{next :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
+               #state{next :: undefined | {<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:module/0">module</a>(), <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:term/0">term</a>()},
                       span_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/opentelemetry.html#t:span_ctx/0">opentelemetry:span_ctx</a>() | undefined,
-                      otel_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/otel_ctx.html#t:t/0">otel_ctx:t</a>() | undefined,
                       status_code :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>() | undefined,
+                      http_route :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>() | undefined,
                       req_start :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>(),
                       req_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                       resp_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
@@ -231,7 +254,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">early_error(StreamID, Reason, PartialReq, Resp, Opts)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_stream_h.erl#L110" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_stream_h.erl#L98" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -262,10 +285,10 @@ opentelemetry_nova
       <i class="ri-link-m" aria-hidden="true"></i>
     </a>
     <div class="heading-with-actions">
-      <h1 class="signature" translate="no">info(StreamID, Info, State)</h1>
+      <h1 class="signature" translate="no">info/3</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_stream_h.erl#L55" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_stream_h.erl#L78" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -278,19 +301,19 @@ opentelemetry_nova
 
           <pre translate="no"><span class="attribute">-spec</span> info(<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:streamid/0">cowboy_stream:streamid</a>(),
            <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
-           #state{next :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
+           #state{next :: undefined | {<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:module/0">module</a>(), <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:term/0">term</a>()},
                   span_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/opentelemetry.html#t:span_ctx/0">opentelemetry:span_ctx</a>() | undefined,
-                  otel_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/otel_ctx.html#t:t/0">otel_ctx:t</a>() | undefined,
                   status_code :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>() | undefined,
+                  http_route :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>() | undefined,
                   req_start :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>(),
                   req_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                   resp_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                   metric_attrs :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:map/0">map</a>()}) ->
               {<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:commands/0">cowboy_stream:commands</a>(),
-               #state{next :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
+               #state{next :: undefined | {<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:module/0">module</a>(), <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:term/0">term</a>()},
                       span_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/opentelemetry.html#t:span_ctx/0">opentelemetry:span_ctx</a>() | undefined,
-                      otel_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/otel_ctx.html#t:t/0">otel_ctx:t</a>() | undefined,
                       status_code :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>() | undefined,
+                      http_route :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>() | undefined,
                       req_start :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>(),
                       req_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                       resp_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
@@ -311,7 +334,7 @@ opentelemetry_nova
       <h1 class="signature" translate="no">init(StreamID, Req, Opts)</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_stream_h.erl#L23" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_stream_h.erl#L58" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -324,10 +347,10 @@ opentelemetry_nova
 
           <pre translate="no"><span class="attribute">-spec</span> init(<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:streamid/0">cowboy_stream:streamid</a>(), <a href="https://hexdocs.pm/cowboy/cowboy_req.html#t:req/0">cowboy_req:req</a>(), <a href="https://hexdocs.pm/cowboy/cowboy.html#t:opts/0">cowboy:opts</a>()) ->
               {<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:commands/0">cowboy_stream:commands</a>(),
-               #state{next :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
+               #state{next :: undefined | {<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:module/0">module</a>(), <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:term/0">term</a>()},
                       span_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/opentelemetry.html#t:span_ctx/0">opentelemetry:span_ctx</a>() | undefined,
-                      otel_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/otel_ctx.html#t:t/0">otel_ctx:t</a>() | undefined,
                       status_code :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>() | undefined,
+                      http_route :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>() | undefined,
                       req_start :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>(),
                       req_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                       resp_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
@@ -345,10 +368,10 @@ opentelemetry_nova
       <i class="ri-link-m" aria-hidden="true"></i>
     </a>
     <div class="heading-with-actions">
-      <h1 class="signature" translate="no">terminate(StreamID, Reason, State)</h1>
+      <h1 class="signature" translate="no">terminate/3</h1>
 
 
-        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.2.2/src/otel_nova_stream_h.erl#L74" class="icon-action" rel="help" aria-label="View Source">
+        <a href="https://github.com/novaframework/opentelemetry_nova/blob/v0.4.0+build.34.ref93e5245/src/otel_nova_stream_h.erl#L86" class="icon-action" rel="help nofollow" aria-label="View Source">
           <i class="ri-code-s-slash-line" aria-hidden="true"></i>
         </a>
 
@@ -361,10 +384,10 @@ opentelemetry_nova
 
           <pre translate="no"><span class="attribute">-spec</span> terminate(<a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:streamid/0">cowboy_stream:streamid</a>(),
                 <a href="https://hexdocs.pm/cowboy/cowboy_stream.html#t:reason/0">cowboy_stream:reason</a>(),
-                #state{next :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:any/0">any</a>(),
+                #state{next :: undefined | {<a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:module/0">module</a>(), <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:term/0">term</a>()},
                        span_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/opentelemetry.html#t:span_ctx/0">opentelemetry:span_ctx</a>() | undefined,
-                       otel_ctx :: <a href="https://hexdocs.pm/opentelemetry_api/otel_ctx.html#t:t/0">otel_ctx:t</a>() | undefined,
                        status_code :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>() | undefined,
+                       http_route :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:binary/0">binary</a>() | undefined,
                        req_start :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:integer/0">integer</a>(),
                        req_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
                        resp_body_length :: <a href="https://www.erlang.org/doc/apps/erts/erlang.html#t:non_neg_integer/0">non_neg_integer</a>(),
@@ -381,34 +404,37 @@ opentelemetry_nova
   </section>
 
     <footer class="footer">
-      <p>
+
+        <p>
+
+            <span class="line">
+              <a href="https://hex.pm/packages/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Package</a>
+
+              <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.4.0+build.34.ref93e5245">Hex Preview</a>
+
+            </span>
 
           <span class="line">
-            <a href="https://hex.pm/packages/opentelemetry_nova/0.2.2" class="footer-hex-package">Hex Package</a>
+            <button class="a-main footer-button display-quick-switch" title="Go to package docs">
+              Go to package docs
+            </button>
 
-            <a href="https://preview.hex.pm/preview/opentelemetry_nova/0.2.2">Hex Preview</a>
+
+              <a href="opentelemetry_nova.epub">
+                Download ePub version
+              </a>
 
           </span>
+        </p>
 
-        <span class="line">
-          <button class="a-main footer-button display-quick-switch" title="Search HexDocs packages">
-            Search HexDocs
-          </button>
+        <p class="built-using">
+          Built using
+          <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.40.3) for the
 
-            <a href="opentelemetry_nova.epub" title="ePub version">
-              Download ePub version
-            </a>
+            <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
 
-        </span>
-      </p>
+        </p>
 
-      <p class="built-using">
-        Built using
-        <a href="https://github.com/elixir-lang/ex_doc" title="ExDoc" target="_blank" rel="help noopener" translate="no">ExDoc</a> (v0.39.1) for the
-
-          <a href="https://erlang.org" title="Erlang" target="_blank" translate="no">Erlang programming language</a>
-
-      </p>
 
     </footer>
   </div>
