@@ -37,6 +37,9 @@ all() ->
         stream_handler_client_address_xff,
         stream_handler_client_address_forwarded,
         stream_handler_client_address_peer_fallback,
+        stream_handler_ignores_forwarded_for_by_default,
+        stream_handler_rejects_invalid_forwarded_for,
+        stream_handler_normalises_unknown_method,
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
@@ -49,6 +52,7 @@ all() ->
         trace_context_propagation,
         metrics_request_duration,
         metrics_request_duration_with_route,
+        metrics_server_attributes_need_allowlist,
         metrics_error_type_in_metrics,
         metrics_active_requests,
         metrics_body_sizes
@@ -78,6 +82,8 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(_TestCase, _Config) ->
     persistent_term:erase(test_metric_pid),
+    _ = application:unset_env(opentelemetry_nova, trust_forwarded_for),
+    _ = application:unset_env(opentelemetry_nova, metric_server_hosts),
     otel_ctx:clear(),
     ok.
 
@@ -164,6 +170,7 @@ stream_handler_protocol_version(_Config) ->
     end.
 
 stream_handler_client_address_xff(_Config) ->
+    ok = application:set_env(opentelemetry_nova, trust_forwarded_for, true),
     Req = make_req(<<"GET">>, <<"/test">>, #{<<"x-forwarded-for">> => <<"10.0.0.1, 10.0.0.2">>}),
     {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
     otel_nova_stream_h:terminate(1, normal, State),
@@ -177,6 +184,7 @@ stream_handler_client_address_xff(_Config) ->
     end.
 
 stream_handler_client_address_forwarded(_Config) ->
+    ok = application:set_env(opentelemetry_nova, trust_forwarded_for, true),
     Req = make_req(<<"GET">>, <<"/test">>, #{<<"forwarded">> => <<"for=192.168.1.1;proto=https">>}),
     {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
     otel_nova_stream_h:terminate(1, normal, State),
@@ -201,6 +209,69 @@ stream_handler_client_address_peer_fallback(_Config) ->
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+stream_handler_ignores_forwarded_for_by_default(_Config) ->
+    Req = make_req(<<"GET">>, <<"/test">>, #{
+        <<"x-forwarded-for">> => <<"10.0.0.1">>, <<"forwarded">> => <<"for=10.0.0.2">>
+    }),
+    ?assertEqual(<<"127.0.0.1">>, maps:get('client.address', span_attributes(stream_opts(), Req))).
+
+stream_handler_rejects_invalid_forwarded_for(_Config) ->
+    ok = application:set_env(opentelemetry_nova, trust_forwarded_for, true),
+    [
+        ?assertEqual(
+            <<"127.0.0.1">>,
+            maps:get(
+                'client.address',
+                span_attributes(stream_opts(), make_req(<<"GET">>, <<"/">>, Headers))
+            ),
+            Headers
+        )
+     || Headers <- [
+            #{<<"x-forwarded-for">> => <<16#FF>>},
+            #{<<"x-forwarded-for">> => <<"not-an-ip, 10.0.0.1">>},
+            #{<<"forwarded">> => <<"for=\"_hidden\"">>}
+        ]
+    ],
+    ?assertEqual(
+        <<"2001:db8::1">>,
+        maps:get(
+            'client.address',
+            span_attributes(
+                stream_opts(),
+                make_req(<<"GET">>, <<"/">>, #{<<"forwarded">> => <<"for=\"[2001:db8::1]:4711\"">>})
+            )
+        )
+    ).
+
+stream_handler_normalises_unknown_method(_Config) ->
+    Req = make_req(<<"PROPFIND">>, <<"/users">>),
+    {State0, DownReq} = start_stream(1, Req),
+    State = run_plugin(DownReq, #{}, State0),
+    {_Cmds, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} ->
+            Attrs = otel_attributes:map(Span#span.attributes),
+            ?assertEqual(<<"HTTP /users">>, Span#span.name),
+            ?assertEqual(<<"_OTHER">>, maps:get('http.request.method', Attrs)),
+            ?assertEqual(<<"PROPFIND">>, maps:get('http.request.method_original', Attrs))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end,
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        Methods = [
+            maps:get('http.request.method', A)
+         || #histogram_datapoint{attributes = A} <- Datapoints
+        ],
+        ?assert(lists:member(<<"_OTHER">>, Methods)),
+        ?assertNot(lists:member(<<"PROPFIND">>, Methods))
+    end),
+    GetReq = make_req(<<"GET">>, <<"/users">>),
+    ?assertNot(maps:is_key('http.request.method_original', span_attributes(stream_opts(), GetReq))).
 
 stream_handler_ends_span_on_auth_rejection(_Config) ->
     %% Simulates what happens when nova_security_handler returns {stop, Req}:
@@ -407,8 +478,36 @@ metrics_request_duration(_Config) ->
         Attrs = DP#histogram_datapoint.attributes,
         ?assertEqual(<<"GET">>, maps:get('http.request.method', Attrs)),
         ?assertEqual(<<"http">>, maps:get('url.scheme', Attrs)),
-        ?assertEqual(<<"localhost">>, maps:get('server.address', Attrs)),
-        ?assertEqual(8080, maps:get('server.port', Attrs))
+        ?assertNot(maps:is_key('server.address', Attrs)),
+        ?assertNot(maps:is_key('server.port', Attrs))
+    end).
+
+metrics_server_attributes_need_allowlist(_Config) ->
+    ok = application:set_env(opentelemetry_nova, metric_server_hosts, [<<"allowed.test">>]),
+    Allowed = (make_req(<<"GET">>, <<"/a">>))#{
+        host => <<"allowed.test">>, sock => {{127, 0, 0, 1}, 4000}
+    },
+    Other = (make_req(<<"GET">>, <<"/a">>))#{
+        host => <<"other.test">>, sock => {{127, 0, 0, 1}, 4000}
+    },
+    [
+        begin
+            {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+            {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 202, #{}, <<"OK">>}, State0),
+            otel_nova_stream_h:terminate(1, normal, State1)
+        end
+     || Req <- [Allowed, Other]
+    ],
+    drain_spans(),
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        Servers = lists:sort([
+            {maps:get('server.address', A), maps:get('server.port', A)}
+         || #histogram_datapoint{attributes = A = #{'http.response.status_code' := 202}} <-
+                Datapoints
+        ]),
+        ?assertEqual([{<<"_OTHER">>, 4000}, {<<"allowed.test">>, 4000}], Servers)
     end).
 
 metrics_request_duration_with_route(_Config) ->
@@ -511,6 +610,16 @@ start_stream(StreamID, Req) ->
 run_plugin(Req, Env, State) ->
     {ok, _Req, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
     forward_casts(1, State).
+
+span_attributes(Opts, Req) ->
+    {_Cmds, State} = otel_nova_stream_h:init(1, Req, Opts),
+    otel_nova_stream_h:terminate(1, normal, State),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} -> otel_attributes:map(Span#span.attributes)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
 
 plugin_route(Req, Env) ->
     {State0, DownReq} = start_stream(1, Req),

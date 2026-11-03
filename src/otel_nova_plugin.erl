@@ -52,7 +52,7 @@ instrument(Req, Env) ->
         undefined ->
             ok;
         Route ->
-            Method = cowboy_req:method(Req),
+            Method = otel_nova_http:span_method(otel_nova_http:method(cowboy_req:method(Req))),
             ?set_attribute('http.route', Route),
             report_route(Route, Req),
             ?update_name(<<Method/binary, " ", Route/binary>>)
@@ -101,12 +101,18 @@ route(Req = #{path := Path}) when is_binary(Path) ->
     case split_pathinfo(Segments, Req) of
         {ok, Fixed, Tail} ->
             Template = replace_bindings(Fixed, maps:get(bindings, Req, #{})) ++ Tail,
-            iolist_to_binary([<<"/">> | lists:join(<<"/">>, Template)]);
+            valid_route(iolist_to_binary([<<"/">> | lists:join(<<"/">>, Template)]));
         error ->
             undefined
     end;
 route(_Req) ->
     undefined.
+
+valid_route(Route) ->
+    case otel_nova_http:is_utf8(Route) of
+        true -> Route;
+        false -> undefined
+    end.
 
 canonical_segments(Path) ->
     canonicalise([S || S <- binary:split(Path, <<"/">>, [global]), S =/= <<>>], []).

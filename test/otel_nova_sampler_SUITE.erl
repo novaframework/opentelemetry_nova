@@ -10,13 +10,20 @@
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 
+-define(TRACE_ID, 16#0af7651916cd43dd8448eb211c80319c).
+-define(SPAN_ID, 16#b7ad6b7169203331).
+-define(TRACEPARENT, ~"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01").
+
 all() ->
     [
         excludes_matching_server_span,
         records_non_matching_server_span,
         records_non_server_span_even_if_name_matches,
         stream_handler_excluded_request_is_not_sampled,
-        stream_handler_other_request_is_sampled
+        stream_handler_other_request_is_sampled,
+        sampled_traceparent_forces_excluded_request_by_default,
+        untrusted_context_does_not_force_sampling,
+        untrusted_context_starts_new_trace_with_link
     ].
 
 init_per_suite(Config) ->
@@ -39,6 +46,7 @@ init_per_testcase(_TestCase, Config) ->
     Config.
 
 end_per_testcase(_TestCase, _Config) ->
+    _ = application:unset_env(opentelemetry_nova, trust_incoming_context),
     otel_ctx:clear(),
     ok.
 
@@ -86,7 +94,41 @@ stream_handler_other_request_is_sampled(_Config) ->
         ct:fail(timeout_waiting_for_span)
     end.
 
+sampled_traceparent_forces_excluded_request_by_default(_Config) ->
+    run_request(~"GET", ~"/metrics", #{~"traceparent" => ?TRACEPARENT}),
+    receive
+        {span, #span{trace_id = TraceId}} -> ?assertEqual(?TRACE_ID, TraceId)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+untrusted_context_does_not_force_sampling(_Config) ->
+    ok = application:set_env(opentelemetry_nova, trust_incoming_context, false),
+    run_request(~"GET", ~"/metrics", #{~"traceparent" => ?TRACEPARENT}),
+    receive
+        {span, #span{} = Span} -> ct:fail({should_not_sample, Span})
+    after 200 ->
+        ok
+    end.
+
+untrusted_context_starts_new_trace_with_link(_Config) ->
+    ok = application:set_env(opentelemetry_nova, trust_incoming_context, false),
+    run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT, ~"baggage" => ~"k=v"}),
+    receive
+        {span, #span{trace_id = TraceId, parent_span_id = Parent, links = Links}} ->
+            ?assertNotEqual(?TRACE_ID, TraceId),
+            ?assertEqual(undefined, Parent),
+            ?assertMatch(
+                [#link{trace_id = ?TRACE_ID, span_id = ?SPAN_ID}], otel_links:list(Links)
+            )
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
 run_request(Method, Path) ->
+    run_request(Method, Path, #{}).
+
+run_request(Method, Path, Headers) ->
     Req = #{
         method => Method,
         path => Path,
@@ -95,7 +137,7 @@ run_request(Method, Path) ->
         host => ~"localhost",
         port => 8080,
         version => 'HTTP/1.1',
-        headers => #{~"host" => ~"localhost:8080"},
+        headers => Headers#{~"host" => ~"localhost:8080"},
         peer => {{127, 0, 0, 1}, 12345},
         pid => self(),
         streamid => 1

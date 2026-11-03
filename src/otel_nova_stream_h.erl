@@ -10,7 +10,25 @@ context in the Req under `otel_nova_ctx`, and `otel_nova_plugin` attaches it in
 the request process, so spans created there are children of the server span.
 
 Instrumentation failures are logged without request data and never crash the
-stream.
+stream, and the server span is started even when building its attributes
+fails.
+
+Options, read from the `opentelemetry_nova` application environment:
+
+* `trust_forwarded_for` (default `false`): take `client.address` from the
+  first `X-Forwarded-For` entry or the `Forwarded` header when it is a valid
+  IP address. Otherwise it is the peer address.
+* `metric_server_hosts` (default unset): a list of hosts recorded as the
+  `server.address` metric attribute, together with the listener port as
+  `server.port`. Other hosts are recorded as `_OTHER`. When unset, neither
+  attribute is recorded on metrics.
+* `trust_incoming_context` (default `true`): continue the trace context and
+  baggage the client sends. When `false` the server span starts a new trace
+  and links to the remote parent.
+
+The method is normalised to one of the nine standard methods or `_OTHER`, on
+both spans and metrics. Spans keep the sent value as
+`http.request.method_original` when it differs.
 """.
 -behavior(cowboy_stream).
 
@@ -83,21 +101,46 @@ early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
 %% Internal
 
 start_request(Req, State) ->
-    Headers = cowboy_req:headers(Req),
-    ParentCtx = otel_propagator_text_map:extract_to(otel_ctx:new(), maps:to_list(Headers)),
-    Method = cowboy_req:method(Req),
-    MetricAttrs = metric_attributes(Req),
+    Method = safely(init, fun() -> otel_nova_http:method(cowboy_req:method(Req)) end, ~"_OTHER"),
+    Attrs = safely(init, fun() -> request_attributes(Req, Method) end, #{
+        'http.request.method' => Method
+    }),
+    MetricAttrs = safely(init, fun() -> metric_attributes(Req, Method) end, #{
+        'http.request.method' => Method
+    }),
+    {ParentCtx, Links} = safely(init, fun() -> parent(Req) end, {otel_ctx:new(), []}),
     SpanCtx = otel_tracer:start_span(
         ParentCtx,
         ?current_tracer,
-        <<"HTTP ", Method/binary>>,
-        #{kind => ?SPAN_KIND_SERVER, attributes => request_attributes(Req)}
+        span_name(Method),
+        #{kind => ?SPAN_KIND_SERVER, attributes => Attrs, links => Links}
     ),
     Ctx = otel_tracer:set_current_span(ParentCtx, SpanCtx),
     safely(
         init, fun() -> ?updown_counter_add('http.server.active_requests', 1, MetricAttrs) end, ok
     ),
     {Req#{?CTX_KEY => Ctx}, State#state{span_ctx = SpanCtx, metric_attrs = MetricAttrs}}.
+
+span_name(~"_OTHER") -> ~"HTTP";
+span_name(Method) -> <<"HTTP ", Method/binary>>.
+
+%% With trust_incoming_context disabled the server span is a new root, so a
+%% client cannot force sampling or inject baggage, and the remote parent is
+%% kept as a link.
+parent(Req) ->
+    Headers = maps:to_list(cowboy_req:headers(Req)),
+    Remote = otel_propagator_text_map:extract_to(otel_ctx:new(), Headers),
+    case application:get_env(opentelemetry_nova, trust_incoming_context, true) of
+        true ->
+            {Remote, []};
+        false ->
+            {otel_ctx:new(), links(otel_tracer:current_span_ctx(Remote))}
+    end.
+
+links(undefined) ->
+    [];
+links(RemoteSpan) ->
+    [opentelemetry:link(RemoteSpan) || otel_span:is_valid(RemoteSpan)].
 
 observe({response, Code, _Headers, Body}, State) when is_integer(Code) ->
     State#state{status_code = Code, resp_body_length = body_size(Body)};
@@ -191,8 +234,8 @@ strip_args({Module, Function, Args, Location}) when is_list(Args) ->
 strip_args(Frame) ->
     Frame.
 
-request_attributes(Req) ->
-    Method = cowboy_req:method(Req),
+request_attributes(Req, Method) ->
+    OriginalMethod = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
     Scheme = cowboy_req:scheme(Req),
     Host = cowboy_req:host(Req),
@@ -211,19 +254,45 @@ request_attributes(Req) ->
         'network.protocol.version' => protocol_version(Req),
         'client.address' => client_address(Req, PeerBin)
     },
-
+    Attrs1 =
+        case OriginalMethod of
+            Method -> Attrs0;
+            _ -> Attrs0#{'http.request.method_original' => OriginalMethod}
+        end,
     case cowboy_req:header(~"user-agent", Req) of
-        undefined -> Attrs0;
-        UA -> Attrs0#{'user_agent.original' => UA}
+        undefined -> Attrs1;
+        UA -> Attrs1#{'user_agent.original' => UA}
     end.
 
-metric_attributes(Req) ->
-    #{
-        'http.request.method' => cowboy_req:method(Req),
-        'url.scheme' => cowboy_req:scheme(Req),
-        'server.address' => cowboy_req:host(Req),
-        'server.port' => cowboy_req:port(Req)
-    }.
+%% Metric attributes become Prometheus series, so every value is bounded:
+%% the method and scheme are normalised, and the server address and port are
+%% only recorded for hosts on the metric_server_hosts allowlist, with the
+%% port taken from the socket rather than the Host header.
+metric_attributes(Req, Method) ->
+    Attrs = #{
+        'http.request.method' => Method,
+        'url.scheme' => otel_nova_http:scheme(cowboy_req:scheme(Req))
+    },
+    case application:get_env(opentelemetry_nova, metric_server_hosts, undefined) of
+        Hosts when is_list(Hosts) -> maps:merge(Attrs, server_attributes(Req, Hosts));
+        _ -> Attrs
+    end.
+
+server_attributes(Req, Hosts) ->
+    Host = cowboy_req:host(Req),
+    Address =
+        case lists:member(Host, Hosts) of
+            true -> Host;
+            false -> ~"_OTHER"
+        end,
+    {_IP, Port} = cowboy_req:sock(Req),
+    #{'server.address' => Address, 'server.port' => Port}.
+
+client_address(Req, PeerBin) ->
+    case application:get_env(opentelemetry_nova, trust_forwarded_for, false) of
+        true -> otel_nova_http:client_address(Req, PeerBin);
+        false -> PeerBin
+    end.
 
 peer_to_binary(Addr) ->
     case inet:ntoa(Addr) of
@@ -236,30 +305,6 @@ protocol_version(#{version := 'HTTP/1.1'}) -> ~"1.1";
 protocol_version(#{version := 'HTTP/2'}) -> ~"2";
 protocol_version(#{version := 'HTTP/3'}) -> ~"3";
 protocol_version(_) -> ~"1.1".
-
-client_address(Req, PeerBin) ->
-    case cowboy_req:header(~"x-forwarded-for", Req) of
-        undefined ->
-            case cowboy_req:header(~"forwarded", Req) of
-                undefined -> PeerBin;
-                Forwarded -> parse_forwarded_for(Forwarded, PeerBin)
-            end;
-        XFF ->
-            [First | _] = binary:split(XFF, ~","),
-            string:trim(First)
-    end.
-
-parse_forwarded_for(Forwarded, Default) ->
-    case
-        re:run(
-            Forwarded,
-            <<"for=\"?([^;,\"]+)\"?">>,
-            [{capture, [1], binary}, caseless]
-        )
-    of
-        {match, [Addr]} -> string:trim(Addr);
-        nomatch -> Default
-    end.
 
 record_if_positive(Name, Value, Attrs) when Value > 0 ->
     ?histogram_record(Name, Value, Attrs);

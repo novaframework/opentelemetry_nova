@@ -13,7 +13,10 @@
     supervised_prom_server_stops_listener_with_app/1,
     setup_prom_server_survives_app_restart/1,
     catch_all_paths_share_one_route_series/1,
-    plugin_failure_does_not_fail_the_request/1
+    plugin_failure_does_not_fail_the_request/1,
+    request_labels_are_bounded/1,
+    invalid_utf8_from_h2_keeps_exposition_valid/1,
+    invalid_forwarded_for_still_records_request/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -24,6 +27,9 @@
 -define(METRICS_PORT, 58617).
 -define(LISTENER, otel_nova_integration_http).
 -define(COOKIE, "session=s3cr3t-cookie-value").
+-define(SAMPLE_LINE,
+    ~"^[a-zA-Z_:][a-zA-Z0-9_:]*(\\{[a-zA-Z_][a-zA-Z0-9_]*=\"(?:[^\"\\\\\\n]|\\\\[\\\\\"n])*\"(,[a-zA-Z_][a-zA-Z0-9_]*=\"(?:[^\"\\\\\\n]|\\\\[\\\\\"n])*\")*\\})? [-+0-9.eE]+(Inf)?$"
+).
 
 all() ->
     [
@@ -36,7 +42,10 @@ all() ->
         supervised_prom_server_stops_listener_with_app,
         setup_prom_server_survives_app_restart,
         catch_all_paths_share_one_route_series,
-        plugin_failure_does_not_fail_the_request
+        plugin_failure_does_not_fail_the_request,
+        request_labels_are_bounded,
+        invalid_utf8_from_h2_keeps_exposition_valid,
+        invalid_forwarded_for_still_records_request
     ].
 
 init_per_suite(Config) ->
@@ -79,6 +88,8 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(_TestCase, _Config) ->
     _ = logger:remove_handler(?MODULE),
+    _ = application:unset_env(opentelemetry_nova, metric_server_hosts),
+    _ = application:unset_env(opentelemetry_nova, trust_forwarded_for),
     _ = application:stop(otel_nova_test_app),
     _ = application:unload(otel_nova_test_app),
     otel_ctx:clear(),
@@ -155,6 +166,7 @@ prometheus_endpoint_serves_recorded_metrics(_Config) ->
     end.
 
 active_requests_gauge_tracks_in_flight_requests(_Config) ->
+    ok = application:set_env(opentelemetry_nova, metric_server_hosts, [~"active.test"]),
     Req = #{
         method => ~"GET",
         path => ~"/active",
@@ -164,6 +176,7 @@ active_requests_gauge_tracks_in_flight_requests(_Config) ->
         version => 'HTTP/1.1',
         headers => #{},
         peer => {{127, 0, 0, 1}, 1},
+        sock => {{127, 0, 0, 1}, 8080},
         pid => self(),
         streamid => 1
     },
@@ -224,6 +237,76 @@ plugin_failure_does_not_fail_the_request(_Config) ->
     end,
     assert_no_log_mentions("s3cr3t").
 
+request_labels_are_bounded(_Config) ->
+    [
+        {ok, _} = raw(
+            [
+                ["M", integer_to_list(N), " /child HTTP/1.1\r\n"],
+                ["host: h", integer_to_list(N), ".example:", integer_to_list(1000 + N), "\r\n"],
+                "connection: close\r\n\r\n"
+            ]
+        )
+     || N <- lists:seq(1, 300)
+    ],
+    _ = receive_spans(600),
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{http_request_method=\"_OTHER\",[^}]*\\} 300"
+    ),
+    Metrics = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(nomatch, binary:match(Metrics, ~".example")),
+    ?assertEqual(nomatch, binary:match(Metrics, ~"M17")),
+    ?assertMatch(
+        {match, [_]},
+        re:run(Metrics, ~"http_server_request_duration_seconds_count\\{[^}]*_OTHER", [global])
+    ),
+    ?assert(length(ets:match(otel_nova_prom_metrics, {{dp, '_', '_'}, '_'})) < 50).
+
+invalid_utf8_from_h2_keeps_exposition_valid(_Config) ->
+    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?HTTP_PORT, [binary, {active, false}]),
+    {Headers, _} = cow_hpack:encode([
+        {~":method", <<"G\"E\nT}", 16#FF>>},
+        {~":scheme", <<"ht\\tp\"x", 16#FE>>},
+        {~":authority", ~"h2.example"},
+        {~":path", ~"/child"}
+    ]),
+    ok = gen_tcp:send(Socket, [
+        ~"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+        cow_http2:settings(#{}),
+        cow_http2:headers(1, fin, Headers)
+    ]),
+    {ok, _} = gen_tcp:recv(Socket, 0, 2000),
+    _ = receive_spans(2),
+    ok = gen_tcp:close(Socket),
+    await_metric(~"url_scheme=\"_OTHER\""),
+    Metrics = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(Metrics, unicode:characters_to_binary(Metrics)),
+    {200, Scraped} = scrape(),
+    [
+        ?assertMatch({match, _}, re:run(Line, ?SAMPLE_LINE), Line)
+     || Line <- binary:split(Scraped, ~"\n", [global, trim_all]),
+        binary:first(Line) =/= $#
+    ].
+
+invalid_forwarded_for_still_records_request(_Config) ->
+    Request = [
+        "GET /child HTTP/1.1\r\nhost: xff.test\r\n",
+        <<"x-forwarded-for: ", 16#FF, "\r\n">>,
+        "connection: close\r\n\r\n"
+    ],
+    ok = application:set_env(opentelemetry_nova, metric_server_hosts, [~"xff.test"]),
+    {ok, _} = raw(Request),
+    ok = application:set_env(opentelemetry_nova, trust_forwarded_for, true),
+    {ok, _} = raw(Request),
+    Spans = [S || S = #span{kind = server} <- receive_spans(4)],
+    ?assertEqual(2, length(Spans)),
+    [
+        ?assertEqual(~"127.0.0.1", maps:get('client.address', otel_attributes:map(A)))
+     || #span{attributes = A} <- Spans
+    ],
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{[^}]*server_address=\"xff.test\"[^}]*\\} 2"
+    ).
+
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
@@ -240,6 +323,21 @@ load_test_app(Mode) ->
             {env, [{mode, Mode}, {prometheus, #{port => ?METRICS_PORT}}]}
         ]}
     ).
+
+raw(Request) ->
+    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?HTTP_PORT, [binary, {active, false}]),
+    ok = gen_tcp:send(Socket, Request),
+    Result = gen_tcp:recv(Socket, 0, 2000),
+    ok = gen_tcp:close(Socket),
+    Result.
+
+scrape() ->
+    {ok, _} = otel_nova_prom_server:start_link(#{port => ?METRICS_PORT}),
+    try
+        request(?METRICS_PORT, "/metrics", [])
+    after
+        otel_nova_prom_server:stop()
+    end.
 
 get(Path, Headers) ->
     request(?HTTP_PORT, Path, Headers).
