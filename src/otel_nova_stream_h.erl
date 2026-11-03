@@ -93,7 +93,9 @@ start_request(Req, State) ->
         #{kind => ?SPAN_KIND_SERVER, attributes => request_attributes(Req)}
     ),
     Ctx = otel_tracer:set_current_span(ParentCtx, SpanCtx),
-    ?updown_counter_add('http.server.active_requests', 1, MetricAttrs),
+    safely(
+        init, fun() -> ?updown_counter_add('http.server.active_requests', 1, MetricAttrs) end, ok
+    ),
     {Req#{?CTX_KEY => Ctx}, State#state{span_ctx = SpanCtx, metric_attrs = MetricAttrs}}.
 
 observe({response, Code, _Headers, Body}, State) when is_integer(Code) ->
@@ -109,8 +111,12 @@ observe(_Info, State) ->
 
 finish_request(#state{span_ctx = undefined}) ->
     ok;
-finish_request(#state{
-    span_ctx = SpanCtx,
+finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode}) ->
+    set_status_attributes(SpanCtx, StatusCode),
+    _ = otel_span:end_span(SpanCtx),
+    safely(terminate, fun() -> record_metrics(State) end, ok).
+
+record_metrics(#state{
     status_code = StatusCode,
     http_route = Route,
     req_start = ReqStart,
@@ -118,9 +124,6 @@ finish_request(#state{
     resp_body_length = RespBodyLen,
     metric_attrs = MetricAttrs
 }) ->
-    set_status_attributes(SpanCtx, StatusCode),
-    _ = otel_span:end_span(SpanCtx),
-
     Duration =
         erlang:convert_time_unit(erlang:monotonic_time() - ReqStart, native, microsecond) / 1000000,
     FinalAttrs = maps:merge(MetricAttrs, maps:merge(route_attrs(Route), status_attrs(StatusCode))),

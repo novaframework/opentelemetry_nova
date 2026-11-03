@@ -64,13 +64,18 @@ terminate(_Reason, _State) ->
     _ = cowboy:stop_listener(?LISTENER),
     ok.
 
-%% The server is registered locally, so a listener that is already running
-%% here was left behind by an instance that was killed before terminate/2.
+%% The server is registered locally, so a listener that already exists here
+%% was left behind by an instance killed before or during terminate/2.
 start_listener(Port, ProtoOpts) ->
     case cowboy:start_clear(?LISTENER, [{port, Port}], ProtoOpts) of
         {error, {already_started, _}} ->
-            ok = cowboy:stop_listener(?LISTENER),
-            cowboy:start_clear(?LISTENER, [{port, Port}], ProtoOpts);
+            restart_listener(Port, ProtoOpts);
+        {error, already_present} ->
+            restart_listener(Port, ProtoOpts);
         Result ->
             Result
     end.
+
+restart_listener(Port, ProtoOpts) ->
+    _ = cowboy:stop_listener(?LISTENER),
+    cowboy:start_clear(?LISTENER, [{port, Port}], ProtoOpts).
