@@ -243,10 +243,10 @@ stream_handler_restores_context_on_terminate(_Config) ->
 
 plugin_enriches_span(_Config) ->
     Req = make_req(<<"GET">>, <<"/users">>),
-    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {State0, DownReq} = start_stream(1, Req),
 
     Env = #{app => my_app, callback => fun fake_controller:index/1},
-    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+    State = run_plugin(DownReq, Env, State0),
 
     {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
@@ -265,10 +265,10 @@ plugin_enriches_span(_Config) ->
 
 plugin_sets_http_route(_Config) ->
     Req = make_req(<<"GET">>, <<"/api/health">>),
-    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {State0, DownReq} = start_stream(1, Req),
 
     Env = #{app => my_app, callback => fun fake_controller:health/1},
-    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+    State = run_plugin(DownReq, Env, State0),
 
     {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
@@ -285,10 +285,10 @@ plugin_sets_http_route(_Config) ->
 plugin_sets_http_route_with_bindings(_Config) ->
     Req0 = make_req(<<"GET">>, <<"/users/42/posts/99">>),
     Req = Req0#{bindings => #{<<"user_id">> => <<"42">>, <<"post_id">> => <<"99">>}},
-    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {State0, DownReq} = start_stream(1, Req),
 
     Env = #{app => my_app, callback => fun fake_controller:show_post/1},
-    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+    State = run_plugin(DownReq, Env, State0),
 
     {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
@@ -305,10 +305,10 @@ plugin_sets_http_route_with_bindings(_Config) ->
 plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     logger:unset_process_metadata(),
     Req = make_req(<<"GET">>, <<"/users">>),
-    {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {State0, DownReq} = start_stream(1, Req),
 
     Env = #{app => my_app, callback => fun fake_controller:index/1},
-    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+    State = run_plugin(DownReq, Env, State0),
 
     Meta = logger:get_process_metadata(),
     ?assert(is_map(Meta)),
@@ -393,10 +393,10 @@ metrics_request_duration(_Config) ->
 
 metrics_request_duration_with_route(_Config) ->
     Req = make_req(<<"GET">>, <<"/users">>),
-    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {State, DownReq} = start_stream(1, Req),
 
     Env = #{app => my_app, callback => fun fake_controller:index/1},
-    {ok, _Req1, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+    State0 = run_plugin(DownReq, Env, State),
 
     {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State0),
     otel_nova_stream_h:terminate(1, normal, State1),
@@ -478,7 +478,28 @@ metrics_body_sizes(_Config) ->
 %%--------------------------------------------------------------------
 
 stream_opts() ->
-    #{stream_handlers => []}.
+    #{stream_handlers => [capture_stream_h]}.
+
+start_stream(StreamID, Req) ->
+    {_Cmds, State} = otel_nova_stream_h:init(StreamID, Req, stream_opts()),
+    receive
+        {downstream_req, DownReq} -> {State, DownReq}
+    after 1000 ->
+        ct:fail(no_downstream_req)
+    end.
+
+run_plugin(Req, Env, State) ->
+    {ok, _Req, _PluginState} = otel_nova_plugin:pre_request(Req, Env, #{}, undefined),
+    forward_casts(1, State).
+
+forward_casts(StreamID, State0) ->
+    receive
+        {{_Pid, StreamID}, Msg = {otel_nova_route, _}} ->
+            {[], State} = otel_nova_stream_h:info(StreamID, Msg, State0),
+            forward_casts(StreamID, State)
+    after 0 ->
+        State0
+    end.
 
 make_req(Method, Path) ->
     make_req(Method, Path, #{}).
