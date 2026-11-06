@@ -6,27 +6,241 @@ Automatic HTTP request tracing and metrics following the [OTel HTTP semantic con
 
 ## Installation
 
-Add to your dependencies in `rebar.config`:
+Add the library, the OpenTelemetry SDK and an exporter to your dependencies in `rebar.config`:
 
 ```erlang
 {deps, [
-    {opentelemetry_nova, "~> 0.1"}
+    {opentelemetry_nova, "~> 0.4"},
+    {opentelemetry, "~> 1.7"},
+    {opentelemetry_experimental, "~> 0.6"},
+    {opentelemetry_exporter, "~> 1.11"}
 ]}.
 ```
 
+List `opentelemetry_exporter`, `opentelemetry_experimental` and `opentelemetry`
+before your own application in the release (or in `applications` of your
+`.app.src`) so the SDK is running before the first request.
+
+## Upgrading from 0.4
+
+These defaults and values change. Check your scrape config, dashboards and
+alerts:
+
+- `otel_nova_prom_server` binds `127.0.0.1` instead of all interfaces. A
+  Prometheus that scrapes the pod IP in Kubernetes gets connection refused.
+  Set `ip => {0, 0, 0, 0}` and add a `NetworkPolicy` (see
+  [Prometheus metrics](#prometheus-metrics)). The listener also no longer
+  accepts h2c.
+- `X-Forwarded-For` and `Forwarded` are no longer trusted: `client.address` is
+  the peer address unless you set `trust_forwarded_for`.
+- `server.address` and `server.port` are no longer on metrics unless you set
+  `metric_server_hosts`. Queries and alerts that group by them need updating.
+- Methods outside the nine standard ones (`GET`, `HEAD`, `POST`, `PUT`,
+  `DELETE`, `CONNECT`, `OPTIONS`, `TRACE`, `PATCH`) become `_OTHER` on spans
+  and metrics. Spans keep the sent value in `http.request.method_original`.
+- `http.route` values change: they are route templates (`/users/:id`,
+  `/assets/[...]`) instead of raw paths, and the attribute is absent when the
+  route cannot be determined.
+- `otel_nova_sampler` exclusions match the method plus the raw request path
+  (`~"GET /metrics"`), not the span name.
+
 ## Setup
 
-Call `setup/0` during application startup:
+Tracing needs three pieces: the stream handler, the plugin and a call to
+`setup/0`.
+
+### 1. Stream handler and plugin
 
 ```erlang
-opentelemetry_nova:setup().
+{nova, [
+    {cowboy_configuration, #{
+        port => 8080,
+        stream_handlers => [
+            otel_nova_stream_h,
+            nova_stream_h,
+            cowboy_compress_h,
+            cowboy_stream_h
+        ]
+    }},
+    {plugins, [
+        {pre_request, otel_nova_plugin, #{}},
+        {pre_request, nova_request_plugin, #{decode_json_body => true}}
+    ]}
+]}
 ```
 
-Or with Prometheus export:
+`otel_nova_stream_h` must come first among the stream handlers. It starts the
+server span, records the HTTP metrics and ends the span when the stream
+terminates.
+
+`otel_nova_plugin` must be the first `pre_request` plugin. Cowboy runs stream
+handlers in the connection process and Nova runs plugins and controllers in a
+separate request process. The stream handler passes the trace context to the
+request process in the Req, and the plugin attaches it there, so every span
+created afterwards (in later plugins, security functions, controllers, or by
+libraries such as `opentelemetry_kura`) is a child of the server span. The
+plugin also names the span after the route, adds the `nova.*` attributes, puts
+`trace_id` and `span_id` in the logger process metadata and reports the route
+for the metrics. Plugins listed before it run without a trace context.
+
+A route group that declares its own `plugins` does not get the global list
+under Nova's default `plugin_strategy` (`local_or_global`), so its requests
+lose the trace linkage. Either list `otel_nova_plugin` first in that group's
+`plugins`, or, for an application mounted through `nova_apps`, set
+`plugin_strategy => global_first` (Nova 0.17.0 and later) so the global
+plugins run before the group's own:
 
 ```erlang
-opentelemetry_nova:setup(#{prometheus => #{port => 9464}}).
+{nova_apps, [{my_admin_app, #{prefix => "/admin", plugin_strategy => global_first}}]}
 ```
+
+`otel_nova_plugin` never fails a request: if its instrumentation crashes it
+logs `otel_nova_instrumentation_failed` without request data and lets the
+request continue.
+
+### 2. Instruments
+
+Call `setup/0` from your application's `start/2` to create the metric
+instruments:
+
+```erlang
+start(_Type, _Args) ->
+    ok = opentelemetry_nova:setup(),
+    my_app_sup:start_link().
+```
+
+### 3. SDK configuration
+
+Traces, exported over OTLP:
+
+```erlang
+{opentelemetry, [
+    {span_processor, batch},
+    {traces_exporter, otlp}
+]},
+{opentelemetry_exporter, [
+    {otlp_protocol, http_protobuf},
+    {otlp_endpoint, "http://localhost:4318"}
+]}
+```
+
+### 4. Options
+
+Set these in the `opentelemetry_nova` application environment:
+
+```erlang
+{opentelemetry_nova, [
+    {trust_forwarded_for, false},
+    {metric_server_hosts, [~"api.example.com"]},
+    {trust_incoming_context, true}
+]}
+```
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `trust_forwarded_for` | `false` | Take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. Otherwise `client.address` is the peer address. |
+| `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
+| `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. |
+
+Enable `trust_forwarded_for` only behind a proxy that replaces these headers
+with its own value. Many proxies append to `X-Forwarded-For` instead (nginx
+with `$proxy_add_x_forwarded_for`, Traefik, ingress-nginx), so the first entry
+is still whatever the client sent, and `client.address` stays
+client-controlled.
+
+With `trust_incoming_context` at its default, a client that sends a sampled
+`traceparent` decides the sampling of its own request, including requests
+excluded by `otel_nova_sampler` under `parent_based`, and its `baggage` is
+propagated to every service the request reaches. On an edge that faces
+untrusted clients, set it to `false`.
+
+## Excluding requests from tracing
+
+`otel_nova_sampler` drops the server span of excluded requests:
+
+```erlang
+{opentelemetry, [
+    {sampler, {parent_based, #{root => {otel_nova_sampler, [~"GET /metrics", ~"GET /healthz"]}}}}
+]}
+```
+
+The sampler decides when the server span starts, before Nova has routed the
+request. Entries are `"METHOD /path"` and match the raw request path (without
+the query string), not the route template, so `~"GET /users/:id"` does not match
+`/users/42`. With `parent_based`, a request carrying a sampled `traceparent`
+follows its parent, unless `trust_incoming_context` is `false`.
+
+## Prometheus metrics
+
+Configure a metric reader that exports to `otel_nova_prom_exporter`:
+
+```erlang
+{opentelemetry_experimental, [
+    {readers, [
+        #{
+            module => otel_metric_reader,
+            config => #{
+                export_interval_ms => 10000,
+                exporter => {otel_nova_prom_exporter, #{}}
+            }
+        }
+    ]}
+]}
+```
+
+Then serve `/metrics` from your supervision tree:
+
+```erlang
+init([]) ->
+    Children = [otel_nova_prom_server:child_spec(#{port => 9464})],
+    {ok, {#{strategy => one_for_one}, Children}}.
+```
+
+The endpoint shows the values of the last reader collection, so it lags by at
+most `export_interval_ms`. The exporter turns delta datapoints into cumulative
+values and stores cumulative datapoints as they are, so it is correct for either
+reader temporality.
+
+The listener binds `127.0.0.1` and speaks HTTP/1.1 only, and `/metrics` has no
+authentication. To let a scraper on another host reach it, set `ip`, for
+example in Kubernetes:
+
+```erlang
+otel_nova_prom_server:child_spec(#{port => 9464, ip => {0, 0, 0, 0}})
+```
+
+and restrict who can connect with a `NetworkPolicy` that only admits the
+Prometheus pods to port 9464:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-app-metrics
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9464
+```
+
+A policy that selects the pods replaces the default allow-all for them, so
+list your application's own port in another `ingress` rule as well.
+
+Each metric keeps at most 2000 series. Further attribute sets are added to one
+overflow series labelled `otel_metric_overflow="true"`. Label values that are
+not valid UTF-8 are rendered as `_INVALID_UTF8`, so the output always parses.
+
+`opentelemetry_nova:setup(#{prometheus => #{port => 9464}})` still works and
+starts the server linked to the caller, but the supervised child is
+preferred: it stops the listener with your application.
 
 ## Span Attributes
 
@@ -34,14 +248,15 @@ Server spans are created for every HTTP request with the following attributes:
 
 | Attribute | Source |
 |-----------|--------|
-| `http.request.method` | Request method |
+| `http.request.method` | Request method, or `_OTHER` if it is not one of the nine standard methods |
+| `http.request.method_original` | Request method as sent, when it differs from `http.request.method` |
 | `http.response.status_code` | Response status code |
 | `http.route` | Matched route template (e.g. `/users/:id`) |
 | `url.path` | Request path |
-| `url.scheme` | `http` or `https` |
+| `url.scheme` | Request scheme |
 | `server.address` | Host header |
 | `server.port` | Server port |
-| `client.address` | `X-Forwarded-For` / `Forwarded` header, or peer IP |
+| `client.address` | Peer IP, or the `X-Forwarded-For` / `Forwarded` address with `trust_forwarded_for` |
 | `network.peer.address` | Peer IP address |
 | `network.peer.port` | Peer port |
 | `network.protocol.version` | HTTP version (`1.0`, `1.1`, `2`, `3`) |
@@ -52,22 +267,55 @@ Server spans are created for every HTTP request with the following attributes:
 | `nova.action` | Action function |
 
 Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
+For an `_OTHER` method the method part is `HTTP`.
+
+`http.route` is the route template, never the raw path. Bound segments become
+`:name`, and the tail matched by a catch-all route, including Nova static
+routes such as `/assets/[...]`, becomes `[...]`, so every file under `/assets`
+shares one label. When the template cannot be determined, `http.route` is left
+out and the span keeps the name `HTTP {METHOD}`. This keeps the number of metric
+series bounded by the route table.
+
+Notes:
+
+- `client.address` uses `X-Forwarded-For` or `Forwarded` only when
+  `trust_forwarded_for` is enabled, and only when the address in it is a valid
+  IP address. See [Options](#4-options).
+- `http.route` is rebuilt from the request path and the binding values, since
+  Nova does not hand the matched route template to plugins. Two kinds of path
+  get a wrong label: a literal segment equal to a binding value (`/users/users`
+  on `/users/:id` becomes `/:id/:id`), and two bindings with the same value
+  (`/teams/7/users/7` on `/teams/:team/users/:user` shows one of the two names
+  in both places). The labels stay bounded; only their text is wrong.
+- The trace context is not detached on a WebSocket upgrade. This is harmless.
+  Over HTTP/1.1 the WebSocket runs in the connection process, which never has
+  the context attached. Over HTTP/2 it keeps running in the request process,
+  so spans the WebSocket handler creates are children of the upgrade request's
+  server span.
+- With `cowboy_compress_h` after `otel_nova_stream_h`, the response body size
+  is measured before compression.
 
 ## Metrics
 
 | Metric | Type | Attributes |
 |--------|------|------------|
-| `http.server.request.duration` | Histogram (seconds) | method, scheme, host, port, status, route, error.type |
-| `http.server.active_requests` | UpDown Counter | method, scheme, host, port |
-| `http.server.request.body.size` | Histogram (bytes) | method, scheme, host, port, status, route, error.type |
-| `http.server.response.body.size` | Histogram (bytes) | method, scheme, host, port, status, route, error.type |
+| `http.server.request.duration` | Histogram (seconds) | method, scheme, status, route, error.type |
+| `http.server.active_requests` | UpDown Counter (Prometheus gauge of in-flight requests) | method, scheme |
+| `http.server.request.body.size` | Histogram (bytes) | method, scheme, status, route, error.type |
+| `http.server.response.body.size` | Histogram (bytes) | method, scheme, status, route, error.type |
+
+Every attribute value is bounded: the method is one of the nine standard
+methods or `_OTHER`, the scheme is `http`, `https` or `_OTHER`, and the route
+is a template. `server.address` and `server.port` are added only when
+`metric_server_hosts` is set.
 
 ## Components
 
-- **`otel_nova_stream_h`** — Cowboy stream handler for HTTP tracing and metrics
-- **`otel_nova_plugin`** — Nova plugin for span enrichment with route and controller info
-- **`otel_nova_prom_exporter`** — Prometheus exporter with delta-to-cumulative conversion
-- **`otel_nova_prom_server`** — HTTP server for Prometheus scraping
+- **`otel_nova_stream_h`**: Cowboy stream handler for the server span and the HTTP metrics
+- **`otel_nova_plugin`**: Nova plugin that attaches the trace context in the request process and adds route and controller info
+- **`otel_nova_prom_exporter`**: metric exporter rendering the Prometheus text format
+- **`otel_nova_prom_server`**: HTTP listener for Prometheus scraping
+- **`otel_nova_sampler`**: sampler that drops server spans of excluded requests
 
 ## License
 

@@ -1,11 +1,11 @@
 -module(test_metric_exporter).
 
--export([init/1, export/4, shutdown/1]).
+-export([init/1, export/3, export/4, shutdown/1]).
 
 init(_) ->
     {ok, []}.
 
-export(metrics, Metrics, _Resource, _State) ->
+export(Metrics, _Resource, _State) ->
     case persistent_term:get(test_metric_pid, undefined) of
         undefined ->
             ok;
@@ -13,6 +13,9 @@ export(metrics, Metrics, _Resource, _State) ->
             [Pid ! {otel_metric, M} || M <- Metrics]
     end,
     ok.
+
+export(metrics, Metrics, Resource, State) ->
+    export(Metrics, Resource, State).
 
 shutdown(_) ->
     ok.
