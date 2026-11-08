@@ -34,6 +34,9 @@ Options, read from the `opentelemetry_nova` application environment:
 * `sensitive_headers` (default `authorization`, `proxy-authorization`,
   `cookie`, `set-cookie`, `x-api-key`): captured headers whose value is
   recorded as `REDACTED`.
+* `opt_in_attributes` (default `[]`): any of `'client.port'`,
+  `'network.local.address'`, `'network.local.port'`, `'network.transport'`,
+  `'http.request.body.size'` and `'http.response.body.size'`.
 
 The method is normalised to one of the nine standard methods or `_OTHER`, on
 both spans and metrics. Spans keep the sent value as
@@ -61,7 +64,8 @@ both spans and metrics. Spans keep the sent value as
     error_type :: binary() | undefined,
     response_headers :: [binary()],
     sensitive_headers :: [binary()],
-    response_header_attrs :: map()
+    response_header_attrs :: map(),
+    opt_in :: [atom()]
 }).
 
 -define(SENSITIVE_HEADERS, [
@@ -80,7 +84,8 @@ init(StreamID, Req, Opts) ->
         metric_attrs = #{},
         response_headers = [],
         sensitive_headers = ?SENSITIVE_HEADERS,
-        response_header_attrs = #{}
+        response_header_attrs = #{},
+        opt_in = []
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
     {Commands, Next} = cowboy_stream:init(StreamID, Req1, Opts),
@@ -132,8 +137,12 @@ start_request(Req, State) ->
     {Sensitive, ResponseHeaders} = safely(
         init, fun() -> header_options() end, {?SENSITIVE_HEADERS, []}
     ),
-    Attrs = maps:merge(
+    Attrs2 = maps:merge(
         Attrs1, safely(init, fun() -> request_header_attributes(Req, Sensitive) end, #{})
+    ),
+    OptIn = safely(init, fun() -> opt_in() end, []),
+    Attrs = maps:merge(
+        Attrs2, safely(init, fun() -> opt_in_request_attributes(Req, Attrs0, OptIn) end, #{})
     ),
     MetricAttrs = safely(init, fun() -> metric_attributes(Req, Method) end, #{
         'http.request.method' => Method
@@ -153,7 +162,8 @@ start_request(Req, State) ->
         span_ctx = SpanCtx,
         metric_attrs = MetricAttrs,
         response_headers = ResponseHeaders,
-        sensitive_headers = Sensitive
+        sensitive_headers = Sensitive,
+        opt_in = OptIn
     }}.
 
 span_name(~"_OTHER") -> ~"HTTP";
@@ -221,7 +231,7 @@ finish_request(
         response_header_attrs = HeaderAttrs
     }
 ) ->
-    _ = otel_span:set_attributes(SpanCtx, HeaderAttrs),
+    _ = otel_span:set_attributes(SpanCtx, maps:merge(HeaderAttrs, body_size_attributes(State))),
     set_status_attributes(SpanCtx, StatusCode, Tag),
     _ = otel_span:end_span(SpanCtx),
     safely(terminate, fun() -> end_active_request(State) end, ok),
@@ -388,6 +398,48 @@ capture_response_headers(_Info, State) ->
 response_header_attributes(Headers, #state{response_headers = Names, sensitive_headers = Sensitive}) ->
     Captured = [{Name, Value} || Name := Value <- Headers, lists:member(Name, Names)],
     otel_nova_http:header_attributes(~"http.response.header.", Captured, Sensitive).
+
+-define(OPT_IN_ATTRIBUTES, [
+    'client.port',
+    'network.local.address',
+    'network.local.port',
+    'network.transport',
+    'http.request.body.size',
+    'http.response.body.size'
+]).
+
+opt_in() ->
+    [Name || Name <- opt(opt_in_attributes, []), lists:member(Name, ?OPT_IN_ATTRIBUTES)].
+
+%% client.port is only known when client.address is the peer, not an address
+%% taken from a forwarding header.
+opt_in_request_attributes(_Req, _Attrs, []) ->
+    #{};
+opt_in_request_attributes(Req, Attrs, OptIn) ->
+    ClientPort =
+        case Attrs of
+            #{
+                'client.address' := Peer,
+                'network.peer.address' := Peer,
+                'network.peer.port' := Port
+            } ->
+                #{'client.port' => Port};
+            #{} ->
+                #{}
+        end,
+    {LocalIP, LocalPort} = cowboy_req:sock(Req),
+    All = ClientPort#{
+        'network.local.address' => peer_to_binary(LocalIP),
+        'network.local.port' => LocalPort,
+        'network.transport' => transport(Req)
+    },
+    maps:with(OptIn, All).
+
+transport(#{version := 'HTTP/3'}) -> ~"udp";
+transport(_Req) -> ~"tcp".
+
+body_size_attributes(#state{opt_in = OptIn, req_body_length = Req, resp_body_length = Resp}) ->
+    maps:with(OptIn, #{'http.request.body.size' => Req, 'http.response.body.size' => Resp}).
 
 opt(Key, Default) ->
     application:get_env(opentelemetry_nova, Key, Default).

@@ -149,6 +149,7 @@ Set these in the `opentelemetry_nova` application environment:
 | `url_query_redact_keys` | `[]` | Query keys whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
 | `request_headers` | `[]` | Lowercase request header names recorded as `http.request.header.<name>` span attributes. |
 | `response_headers` | `[]` | Lowercase response header names recorded as `http.response.header.<name>` span attributes. |
+| `opt_in_attributes` | `[]` | Opt-in span attributes to add: any of `'client.port'`, `'network.local.address'`, `'network.local.port'`, `'network.transport'`, `'http.request.body.size'`, `'http.response.body.size'`. |
 | `sensitive_headers` | `[~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"]` | Captured headers whose value is recorded as `[~"REDACTED"]`. Replaces the default list when set. |
 
 Enable `trust_forwarded_for` only behind a proxy that replaces these headers
@@ -300,6 +301,12 @@ Server spans are created for every HTTP request with the following attributes:
 | `network.peer.port` | Peer port |
 | `network.protocol.version` | HTTP version (`1.0`, `1.1`, `2`, `3`) |
 | `user_agent.original` | User-Agent header |
+| `client.port` | Peer port, when `client.address` is the peer address (opt-in) |
+| `network.local.address` | Listener socket address (opt-in) |
+| `network.local.port` | Listener socket port (opt-in) |
+| `network.transport` | `tcp`, or `udp` for HTTP/3 (opt-in) |
+| `http.request.body.size` | Request body bytes read, set when the span ends (opt-in) |
+| `http.response.body.size` | Response body bytes sent, set when the span ends (opt-in) |
 | `http.request.header.<name>` | Request headers listed in `request_headers` |
 | `http.response.header.<name>` | Response headers listed in `response_headers` |
 | `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors |

@@ -45,6 +45,7 @@ all() ->
         stream_handler_url_query_options,
         stream_handler_captures_request_headers,
         stream_handler_captures_response_headers,
+        stream_handler_sets_opt_in_attributes,
         stream_handler_ignores_failure_after_response,
         plugin_enriches_span,
         plugin_sets_http_route,
@@ -411,6 +412,51 @@ stream_handler_captures_response_headers(_Config) ->
     ),
     ok = application:unset_env(opentelemetry_nova, response_headers),
     ?assertEqual(#{}, response_header_attrs({response, 200, Headers, ~"ok"})).
+
+stream_handler_sets_opt_in_attributes(_Config) ->
+    OptIn = [
+        'client.port',
+        'network.local.address',
+        'network.local.port',
+        'network.transport',
+        'http.request.body.size',
+        'http.response.body.size'
+    ],
+    Default = run_with_bodies(~"/opt-in-default"),
+    [?assertNot(maps:is_key(Name, Default), Name) || Name <- OptIn],
+    ok = application:set_env(opentelemetry_nova, opt_in_attributes, [unknown | OptIn]),
+    Attrs = run_with_bodies(~"/opt-in"),
+    ?assertEqual(
+        #{
+            'client.port' => 12345,
+            'network.local.address' => ~"127.0.0.2",
+            'network.local.port' => 8080,
+            'network.transport' => ~"tcp",
+            'http.request.body.size' => 5,
+            'http.response.body.size' => 3
+        },
+        maps:with(OptIn, Attrs)
+    ),
+    ok = application:set_env(opentelemetry_nova, trust_forwarded_for, true),
+    Forwarded = make_req(~"GET", ~"/", #{~"x-forwarded-for" => ~"10.0.0.1"}),
+    ForwardedAttrs = span_attributes(stream_opts(), Forwarded),
+    ?assertEqual(~"10.0.0.1", maps:get('client.address', ForwardedAttrs)),
+    ?assertNot(maps:is_key('client.port', ForwardedAttrs)),
+    ?assertEqual(
+        ~"udp",
+        maps:get(
+            'network.transport',
+            span_attributes(stream_opts(), make_req_with_version(~"GET", ~"/", 'HTTP/3'))
+        )
+    ).
+
+run_with_bodies(Path) ->
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"POST", Path), stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:data(1, fin, ~"hello", State0),
+    {_Cmds2, State2} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"bye"}, State1),
+    otel_nova_stream_h:terminate(1, normal, State2),
+    otel_tracer_provider:force_flush(),
+    otel_nova_test_util:span_attrs(receive_span(Path)).
 
 stream_handler_ignores_failure_after_response(_Config) ->
     Req = make_req(~"GET", ~"/late-failure"),
@@ -925,6 +971,7 @@ make_req(Method, Path, ExtraHeaders) ->
         version => 'HTTP/1.1',
         headers => Headers,
         peer => {{127, 0, 0, 1}, 12345},
+        sock => {{127, 0, 0, 2}, 8080},
         cert => undefined,
         pid => self(),
         streamid => 1
