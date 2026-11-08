@@ -21,6 +21,16 @@ List `opentelemetry_exporter`, `opentelemetry_experimental` and `opentelemetry`
 before your own application in the release (or in `applications` of your
 `.app.src`) so the SDK is running before the first request.
 
+## Upgrading from 0.5
+
+- Spans carry `url.query`, with the values of secret keys redacted. Set
+  `url_query` to `false` to leave it out.
+- A 5xx caused by a Nova crash, with `otel_nova_plugin` registered as a
+  `post_request` plugin, has `error.type` set to the crash tag (`badarg`,
+  `badmatch`, ...) instead of `500` on spans and metrics. A stream that ends
+  without a response has the Cowboy reason (`socket_error`, ...). Alerts that
+  match `error_type="500"` need updating.
+
 ## Upgrading from 0.4
 
 These defaults and values change. Check your scrape config, dashboards and
