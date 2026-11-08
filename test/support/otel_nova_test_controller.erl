@@ -3,6 +3,7 @@
 -export([ok/1, crash/1, crash_tuple/1, throw_status/1]).
 -export([crash_security/1, crash_plugin/4]).
 -export([span_name/2, crashing_span_name/2, invalid_span_name/2]).
+-export([trust_internal/1, crashing_trust/1]).
 
 ok(_Req) ->
     {status, 200}.
@@ -32,3 +33,9 @@ crashing_span_name(_Method, _Route) ->
 
 invalid_span_name(_Method, _Route) ->
     "not a binary".
+
+trust_internal(Req) ->
+    cowboy_req:header(~"x-internal", Req) =:= ~"yes".
+
+crashing_trust(_Req) ->
+    error(trust_boom).

@@ -27,7 +27,9 @@ all() ->
         untrusted_context_starts_new_trace_with_link,
         map_config_delegates_to_sampler,
         map_config_defaults_to_always_on,
-        description_includes_delegate
+        description_includes_delegate,
+        trust_callback_decides_per_request,
+        crashing_trust_callback_does_not_trust
     ].
 
 init_per_suite(Config) ->
@@ -161,6 +163,44 @@ description_includes_delegate(_Config) ->
             otel_sampler:description(otel_sampler:new({otel_nova_sampler, []})), ~"AlwaysOn"
         )
     ).
+
+trust_callback_decides_per_request(_Config) ->
+    ok = application:set_env(
+        opentelemetry_nova, trust_incoming_context, {otel_nova_test_controller, trust_internal}
+    ),
+    run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT, ~"x-internal" => ~"yes"}),
+    receive
+        {span, #span{trace_id = Trusted}} -> ?assertEqual(?TRACE_ID, Trusted)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end,
+    run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT}),
+    receive
+        {span, #span{trace_id = Untrusted, links = Links}} ->
+            ?assertNotEqual(?TRACE_ID, Untrusted),
+            ?assertMatch([#link{trace_id = ?TRACE_ID}], otel_links:list(Links))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+crashing_trust_callback_does_not_trust(_Config) ->
+    [
+        begin
+            ok = application:set_env(opentelemetry_nova, trust_incoming_context, Setting),
+            run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT}),
+            receive
+                {span, #span{trace_id = TraceId}} -> ?assertNotEqual(?TRACE_ID, TraceId, Setting)
+            after 5000 ->
+                ct:fail(timeout_waiting_for_span)
+            end
+        end
+     || Setting <- [
+            {otel_nova_test_controller, crashing_trust},
+            {otel_nova_test_controller, missing},
+            {otel_nova_test_controller, span_name},
+            "true"
+        ]
+    ].
 
 decide(Sampler, Path) ->
     otel_sampler:should_sample(

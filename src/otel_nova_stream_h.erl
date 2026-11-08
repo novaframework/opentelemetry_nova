@@ -24,7 +24,9 @@ Options, read from the `opentelemetry_nova` application environment:
   attribute is recorded on metrics.
 * `trust_incoming_context` (default `true`): continue the trace context and
   baggage the client sends. When `false` the server span starts a new trace
-  and links to the remote parent.
+  and links to the remote parent. `{Mod, Fun}` decides per request:
+  `Mod:Fun(Req)` returns `true` to trust it; any other result or a crash means
+  `false`.
 * `url_query` (default `true`): set `url.query`, with the values of secret
   keys replaced by `REDACTED`.
 * `url_query_redact_keys` (default `[]`): more query keys to redact.
@@ -175,11 +177,27 @@ span_name(Method) -> <<"HTTP ", Method/binary>>.
 parent(Req) ->
     Headers = maps:to_list(cowboy_req:headers(Req)),
     Remote = otel_propagator_text_map:extract_to(otel_ctx:new(), Headers),
-    case application:get_env(opentelemetry_nova, trust_incoming_context, true) of
+    case trust_incoming_context(Req) of
         true ->
             {Remote, []};
         false ->
             {otel_ctx:new(), links(otel_tracer:current_span_ctx(Remote))}
+    end.
+
+trust_incoming_context(Req) ->
+    case opt(trust_incoming_context, true) of
+        true ->
+            true;
+        {Mod, Fun} when is_atom(Mod), is_atom(Fun) ->
+            try
+                Mod:Fun(Req) =:= true
+            catch
+                Class:Reason:Stacktrace ->
+                    log_failure(trust_incoming_context, Class, Reason, Stacktrace),
+                    false
+            end;
+        _ ->
+            false
     end.
 
 links(undefined) ->

@@ -144,7 +144,7 @@ Set these in the `opentelemetry_nova` application environment:
 |--------|---------|--------|
 | `trust_forwarded_for` | `false` | Take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. Otherwise `client.address` is the peer address. |
 | `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
-| `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. |
+| `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. `{Mod, Fun}` decides per request: `Mod:Fun(Req)` returns `true` to trust the context. Any other result, or a crash (logged), means `false`. |
 | `url_query` | `true` | Set `url.query` on the span when the request has a query string. `false` leaves it out. |
 | `url_query_redact_keys` | `[]` | Query keys whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
 | `request_headers` | `[]` | Lowercase request header names recorded as `http.request.header.<name>` span attributes. |
@@ -179,7 +179,24 @@ With `trust_incoming_context` at its default, a client that sends a sampled
 `traceparent` decides the sampling of its own request, including requests
 excluded by `otel_nova_sampler` under `parent_based`, and its `baggage` is
 propagated to every service the request reaches. On an edge that faces
-untrusted clients, set it to `false`.
+untrusted clients, set it to `false`, or use a callback when one listener
+serves both internal and public traffic. The callback runs in the connection
+process before routing, on the Cowboy Req:
+
+```erlang
+-module(my_trust).
+-export([internal/1]).
+
+internal(Req) ->
+    case cowboy_req:peer(Req) of
+        {{10, _, _, _}, _Port} -> true;
+        _ -> false
+    end.
+```
+
+```erlang
+{opentelemetry_nova, [{trust_incoming_context, {my_trust, internal}}]}
+```
 
 ## Excluding requests from tracing
 
