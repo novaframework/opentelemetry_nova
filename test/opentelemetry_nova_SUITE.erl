@@ -289,6 +289,7 @@ stream_handler_trusts_listed_forwarding_headers(_Config) ->
      || {Setting, Headers, Expected} <- [
             {true, All, ~"10.0.0.1"},
             {[~"x-real-ip", ~"forwarded"], All, ~"10.0.0.3"},
+            {[~"X-Real-IP"], All, ~"10.0.0.3"},
             {[~"forwarded", ~"x-forwarded-for"], All, ~"10.0.0.2"},
             {[~"x-real-ip", ~"forwarded"], maps:remove(~"x-real-ip", All), ~"10.0.0.2"},
             {[~"x-real-ip"], #{~"x-real-ip" => ~"[2001:db8::2]:443"}, ~"2001:db8::2"},
@@ -422,31 +423,47 @@ stream_handler_url_query_options(_Config) ->
 
 stream_handler_captures_request_headers(_Config) ->
     ok = application:set_env(opentelemetry_nova, request_headers, [
-        ~"x-request-id", ~"Authorization", ~"accept", ~"x-binary"
+        ~"x-request-id", ~"Authorization", ~"accept", ~"x-binary", ~"X-CSRF-Token", ~"x-tenant"
     ]),
     Req = make_req(~"GET", ~"/", #{
         ~"x-request-id" => ~"abc",
         ~"authorization" => ~"Bearer secret",
         ~"x-binary" => <<16#FF>>,
+        ~"x-csrf-token" => ~"csrf",
+        ~"x-tenant" => ~"acme",
         ~"x-not-captured" => ~"1"
     }),
-    Attrs = span_attributes(stream_opts(), Req),
     ?assertEqual(
         #{
             ~"http.request.header.x-request-id" => [~"abc"],
-            ~"http.request.header.authorization" => [~"REDACTED"]
+            ~"http.request.header.authorization" => [~"REDACTED"],
+            ~"http.request.header.x-csrf-token" => [~"REDACTED"],
+            ~"http.request.header.x-tenant" => [~"acme"]
         },
-        maps:filter(fun(K, _) -> is_binary(K) end, Attrs)
+        binary_keys(span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, sensitive_headers, [~"X-Tenant"]),
+    ?assertEqual(
+        #{
+            ~"http.request.header.x-request-id" => [~"abc"],
+            ~"http.request.header.authorization" => [~"REDACTED"],
+            ~"http.request.header.x-csrf-token" => [~"REDACTED"],
+            ~"http.request.header.x-tenant" => [~"REDACTED"]
+        },
+        binary_keys(span_attributes(stream_opts(), Req))
     ),
     ok = application:set_env(opentelemetry_nova, sensitive_headers, []),
     ?assertEqual(
-        [~"Bearer secret"],
+        [~"REDACTED"],
         maps:get(~"http.request.header.authorization", span_attributes(stream_opts(), Req))
     ).
 
+binary_keys(Attrs) ->
+    maps:filter(fun(K, _) -> is_binary(K) end, Attrs).
+
 stream_handler_captures_response_headers(_Config) ->
     ok = application:set_env(opentelemetry_nova, response_headers, [
-        ~"content-type", ~"set-cookie", ~"x-trace"
+        ~"Content-Type", ~"set-cookie", ~"x-trace"
     ]),
     Headers = #{
         ~"content-type" => ~"text/plain",
@@ -466,7 +483,7 @@ stream_handler_captures_response_headers(_Config) ->
     ?assertEqual(
         #{
             ~"http.response.header.content-type" => [~"REDACTED"],
-            ~"http.response.header.set-cookie" => [~"a=1", ~"b=2"],
+            ~"http.response.header.set-cookie" => [~"REDACTED"],
             ~"http.response.header.x-trace" => [~"t1"]
         },
         response_header_attrs(headers, Headers)

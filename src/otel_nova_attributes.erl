@@ -6,7 +6,14 @@
 -export_type([options/0]).
 
 -define(SENSITIVE_HEADERS, [
-    ~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"
+    ~"authorization",
+    ~"proxy-authorization",
+    ~"cookie",
+    ~"set-cookie",
+    ~"x-api-key",
+    ~"x-auth-token",
+    ~"x-csrf-token",
+    ~"x-amz-security-token"
 ]).
 
 -define(FORWARDED_HEADERS, [~"forwarded", ~"x-forwarded-for", ~"x-real-ip"]).
@@ -66,11 +73,9 @@ options() ->
          || Key <- names(maps:get(url_query_redact_keys, Env, [])), Key =/= ~""
         ],
         request_headers => names(maps:get(request_headers, Env, [])),
-        sensitive_headers =>
-            case maps:get(sensitive_headers, Env, ?SENSITIVE_HEADERS) of
-                Sensitive when is_list(Sensitive) -> names(Sensitive);
-                _ -> ?SENSITIVE_HEADERS
-            end,
+        sensitive_headers => lists:usort(
+            ?SENSITIVE_HEADERS ++ names(maps:get(sensitive_headers, Env, []))
+        ),
         response_headers => names(maps:get(response_headers, Env, [])),
         opt_in_attributes =>
             case maps:get(opt_in_attributes, Env, []) of
@@ -82,7 +87,7 @@ options() ->
 forwarded_headers(true) ->
     [~"x-forwarded-for", ~"forwarded"];
 forwarded_headers(Headers) when is_list(Headers) ->
-    [H || H <- Headers, lists:member(H, ?FORWARDED_HEADERS)];
+    [H || H <- names(Headers), lists:member(H, ?FORWARDED_HEADERS)];
 forwarded_headers(_) ->
     [].
 

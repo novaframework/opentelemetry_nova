@@ -32,12 +32,13 @@ Options, read from the `opentelemetry_nova` application environment:
 * `url_query` (default `false`): set `url.query`, with the values of
   secret-looking keys replaced by `REDACTED`.
 * `url_query_redact_keys` (default `[]`): more key fragments to redact.
-* `request_headers` and `response_headers` (default `[]`): lowercase header
-  names recorded as `http.request.header.<name>` and
+* `request_headers` and `response_headers` (default `[]`): header names,
+  lowercased, recorded as `http.request.header.<name>` and
   `http.response.header.<name>` span attributes.
-* `sensitive_headers` (default `authorization`, `proxy-authorization`,
-  `cookie`, `set-cookie`, `x-api-key`): captured headers whose value is
-  recorded as `REDACTED`.
+* `sensitive_headers` (default `[]`): captured headers whose value is recorded
+  as `REDACTED`, in addition to `authorization`, `proxy-authorization`,
+  `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`, `x-csrf-token` and
+  `x-amz-security-token`.
 * `opt_in_attributes` (default `[]`): any of `'client.port'`,
   `'network.local.address'`, `'network.local.port'`, `'network.transport'`,
   `'http.request.body.size'` and `'http.response.body.size'`.

@@ -117,8 +117,9 @@ query_key(Key) ->
     end.
 
 %% Semconv records a header as a list of values. Cowboy joins repeated request
-%% headers into one value and passes the cookies of a response as a list.
--spec header_attributes(binary(), [{binary(), iodata() | [iodata()]}], [binary()]) ->
+%% headers into one value. The response cookies, which Cowboy passes as a
+%% list, are always redacted.
+-spec header_attributes(binary(), [{binary(), iodata()}], [binary()]) ->
     #{binary() => [binary()]}.
 header_attributes(Prefix, Headers, Sensitive) ->
     maps:from_list([
@@ -131,13 +132,8 @@ header_attributes(Prefix, Headers, Sensitive) ->
 header_values(Name, Value, Sensitive) ->
     case lists:member(Name, Sensitive) of
         true -> [~"REDACTED"];
-        false -> [V || V <- raw_header_values(Name, Value), is_utf8(V)]
+        false -> [V || V <- [iolist_to_binary(Value)], is_utf8(V)]
     end.
-
-raw_header_values(~"set-cookie", Cookies) when is_list(Cookies) ->
-    [iolist_to_binary(Cookie) || Cookie <- Cookies];
-raw_header_values(_Name, Value) ->
-    [iolist_to_binary(Value)].
 
 -spec lowercase(binary()) -> binary().
 lowercase(Bin) ->

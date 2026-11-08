@@ -154,16 +154,16 @@ Set these in the `opentelemetry_nova` application environment:
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `trust_forwarded_for` | `false` | `true`: take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. A list of header names out of `~"forwarded"`, `~"x-forwarded-for"` and `~"x-real-ip"` uses those headers in that priority order. Otherwise `client.address` is the peer address. |
+| `trust_forwarded_for` | `false` | `true`: take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. A list of header names out of `~"forwarded"`, `~"x-forwarded-for"` and `~"x-real-ip"` (lowercased) uses those headers in that priority order. Otherwise `client.address` is the peer address. |
 | `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
 | `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. `{Mod, Fun}` decides per request: `Mod:Fun(Req)` returns `true` to trust the context. Any other result, or a crash (logged), means `false`. |
 | `url_query` | `false` | Set `url.query` on the span when the request has a query string, with secret-looking values redacted (see below). |
 | `url_query_redact_keys` | `[]` | More key fragments whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
-| `request_headers` | `[]` | Lowercase request header names recorded as `http.request.header.<name>` span attributes. |
-| `response_headers` | `[]` | Lowercase response header names recorded as `http.response.header.<name>` span attributes. |
+| `request_headers` | `[]` | Request header names recorded as `http.request.header.<name>` span attributes. Names are lowercased. |
+| `response_headers` | `[]` | Response header names recorded as `http.response.header.<name>` span attributes. Names are lowercased. |
 | `span_name_formatter` | unset | `{Mod, Fun}`: the plugin names the server span `Mod:Fun(Method, Route)`. `Method` is the normalised method (`~"_OTHER"` for a non-standard one), `Route` the route template or `undefined`. A crash or a non-binary result keeps the default name and is logged as `otel_nova_instrumentation_failed`. |
 | `opt_in_attributes` | `[]` | Opt-in span attributes to add: any of `'client.port'`, `'network.local.address'`, `'network.local.port'`, `'network.transport'`, `'http.request.body.size'`, `'http.response.body.size'`. |
-| `sensitive_headers` | `[~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"]` | Captured headers whose value is recorded as `[~"REDACTED"]`. Replaces the default list when set. |
+| `sensitive_headers` | `[]` | More captured headers whose value is recorded as `[~"REDACTED"]`. Always added to the defaults `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`, `x-csrf-token` and `x-amz-security-token`, which cannot be turned off. Names are lowercased. |
 
 With a list, the first listed header that the request carries decides. If
 its address is not a valid IP address, `client.address` is the peer address;
@@ -192,7 +192,7 @@ recorded.
 
 Captured headers are lists of binaries, as the semantic conventions specify.
 Cowboy joins a repeated request header into one value, so a request header has
-one element; each `set-cookie` cookie of a response is its own element.
+one element.
 Response headers are read from the response Cowboy is asked to send, which
 includes `date`, `server` and, for a full body, `content-length`, but not the
 headers the protocol layer adds afterwards (`connection`,
