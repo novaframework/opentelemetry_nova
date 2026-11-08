@@ -431,6 +431,12 @@ master):
 - Security function crash, or a crash in a `post_request` plugin listed before
   `otel_nova_plugin`: not tagged, `error.type` stays the status code.
 
+A stream that ends without any response, for example because the client
+closed the connection or the request timed out, gets `error.type` set to the
+tag of the reason Cowboy reports (`socket_error`, `internal_error`,
+`stream_error`, `connection_error`, `stop`) on the span and the metrics, and
+an error span status. Its duration is still recorded.
+
 ## Metrics
 
 | Metric | Type | Attributes |
