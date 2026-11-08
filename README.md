@@ -108,7 +108,10 @@ plugins run before the group's own:
 ```
 
 Register `otel_nova_plugin` as the first `post_request` plugin as well, so
-crashes are tagged (see [Crashes](#crashes)).
+crashes are tagged (see [Crashes](#crashes)). The same `plugin_strategy`
+caveat applies: a route group with its own `plugins` needs
+`{post_request, otel_nova_plugin, #{}}` in that list too, unless its
+application uses `global_first`.
 
 `otel_nova_plugin` never fails a request: if its instrumentation crashes it
 logs `otel_nova_instrumentation_failed` without request data and lets the
@@ -402,10 +405,14 @@ process, where the trace context is attached, so the log record carries the
 What is tagged depends on where the crash happens (checked against Nova
 master):
 
-- Controller crash: Nova runs the `post_request` plugins, which tag it.
-- `pre_request` plugin crash: Nova skips the `post_request` plugins and runs
-  the `pre_request` plugins a second time instead. `otel_nova_plugin` tags the
-  crash there.
+- Controller crash: Nova runs the `post_request` plugins, which tag it. This
+  is the supported path, so register `otel_nova_plugin` as a `post_request`
+  plugin.
+- `pre_request` plugin crash: a known Nova bug in current versions skips the
+  `post_request` plugins and runs the `pre_request` plugins a second time
+  instead. `otel_nova_plugin` also checks `crash_info` in `pre_request`, so
+  the crash is tagged there for now; once Nova runs the `post_request`
+  plugins after a plugin crash, the `post_request` registration tags it.
 - `throw({Status, Reason})` from a controller is a deliberate status, not a
   crash: `error.type` is the status code for a 5xx, as usual.
 - A crash Nova renders with a status below 500, such as the 404 it uses for

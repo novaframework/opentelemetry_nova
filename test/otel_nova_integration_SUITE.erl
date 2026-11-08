@@ -366,9 +366,9 @@ controller_crash_sets_error_type(_Config) ->
 controller_crash_with_tagged_tuple_sets_error_type(_Config) ->
     assert_crash_tagged("/nova/crash_tuple", ~"badmatch").
 
-%% Nova renders a pre_request plugin crash without running the post_request
-%% plugins; it runs the pre_request plugins a second time instead, where
-%% otel_nova_plugin picks up crash_info.
+%% A known Nova bug: a pre_request plugin crash skips the post_request plugins
+%% and runs the pre_request plugins a second time, where otel_nova_plugin
+%% picks up crash_info.
 plugin_crash_sets_error_type(_Config) ->
     assert_crash_tagged("/nova/plugin_crash", ~"plugin_boom").
 
