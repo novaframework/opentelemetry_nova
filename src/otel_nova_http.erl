@@ -88,8 +88,8 @@ is_utf8(Bin) ->
 -spec redact_query(binary(), [binary()]) -> binary().
 redact_query(Qs, ExtraFragments) ->
     Fragments = ?REDACTED_QUERY_FRAGMENTS ++ ExtraFragments,
-    Pairs = binary:split(Qs, ~"&", [global]),
-    iolist_to_binary(lists:join(~"&", [redact_pair(Pair, Fragments) || Pair <- Pairs])).
+    [First | Rest] = [redact_pair(Pair, Fragments) || Pair <- binary:split(Qs, ~"&", [global])],
+    iolist_to_binary([First | [[$&, Pair] || Pair <- Rest]]).
 
 -spec redact_pair(binary(), [binary()]) -> binary().
 redact_pair(~"", _Fragments) ->
@@ -105,9 +105,10 @@ redact_pair(Pair, Fragments) ->
             ~"REDACTED"
     end.
 
+-spec is_secret_key(binary(), [binary()]) -> boolean().
 is_secret_key(Key, Fragments) ->
     lists:member(Key, ?REDACTED_QUERY_KEYS) orelse
-        lists:any(fun(Fragment) -> binary:match(Key, Fragment) =/= nomatch end, Fragments).
+        [Fragment || Fragment <- Fragments, binary:match(Key, Fragment) =/= nomatch] =/= [].
 
 query_key(Key) ->
     Plain = binary:replace(Key, ~"+", ~" ", [global]),

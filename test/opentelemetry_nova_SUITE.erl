@@ -460,7 +460,7 @@ stream_handler_captures_request_headers(_Config) ->
             ~"http.request.header.x-csrf-token" => [~"REDACTED"],
             ~"http.request.header.x-tenant" => [~"acme"]
         },
-        binary_keys(span_attributes(stream_opts(), Req))
+        otel_nova_test_util:binary_keys(span_attributes(stream_opts(), Req))
     ),
     ok = application:set_env(opentelemetry_nova, sensitive_headers, [~"X-Tenant"]),
     ?assertEqual(
@@ -470,16 +470,13 @@ stream_handler_captures_request_headers(_Config) ->
             ~"http.request.header.x-csrf-token" => [~"REDACTED"],
             ~"http.request.header.x-tenant" => [~"REDACTED"]
         },
-        binary_keys(span_attributes(stream_opts(), Req))
+        otel_nova_test_util:binary_keys(span_attributes(stream_opts(), Req))
     ),
     ok = application:set_env(opentelemetry_nova, sensitive_headers, []),
     ?assertEqual(
         [~"REDACTED"],
         maps:get(~"http.request.header.authorization", span_attributes(stream_opts(), Req))
     ).
-
-binary_keys(Attrs) ->
-    maps:filter(fun(K, _) -> is_binary(K) end, Attrs).
 
 stream_handler_captures_response_headers(_Config) ->
     ok = application:set_env(opentelemetry_nova, response_headers, [
@@ -1017,7 +1014,7 @@ metrics_include_added_attributes(_Config) ->
              || #histogram_datapoint{attributes = A = #{'http.response.status_code' := 201}} <-
                     Datapoints
             ],
-            ?assertEqual(Expected, binary_keys(Attrs)),
+            ?assertEqual(Expected, otel_nova_test_util:binary_keys(Attrs)),
             ?assertEqual(~"/labelled", maps:get('http.route', Attrs)),
             ?assertNot(maps:is_key('error.type', Attrs))
         end)

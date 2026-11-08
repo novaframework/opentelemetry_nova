@@ -1,6 +1,6 @@
 -module(otel_nova_test_util).
 
--export([stream_req/2, span_attrs/1, receive_span/1]).
+-export([stream_req/2, span_attrs/1, receive_span/1, binary_keys/1]).
 
 -include_lib("opentelemetry/include/otel_span.hrl").
 
@@ -53,3 +53,7 @@ receive_span(Path, Attempts) ->
     after 100 ->
         receive_span(Path, Attempts - 1)
     end.
+
+-spec binary_keys(map()) -> map().
+binary_keys(Attrs) ->
+    maps:filter(fun(Key, _) -> is_binary(Key) end, Attrs).

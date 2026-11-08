@@ -4,7 +4,7 @@
 -export([options/0, span/3, metric/3, response_headers/2, body_sizes/3, final_metric/5]).
 -export([add_extra_metric/2]).
 
--export_type([options/0]).
+-export_type([options/0, attributes/0]).
 
 -define(SENSITIVE_HEADERS, [
     ~"authorization",
@@ -40,6 +40,8 @@
 
 -define(MAX_EXTRA_METRIC_ATTRIBUTES, 10).
 -define(MAX_EXTRA_METRIC_VALUE_SIZE, 64).
+
+-type attributes() :: #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
 
 -type options() :: #{
     trust_forwarded_for := [binary()],
@@ -77,9 +79,12 @@ options() ->
          || Key <- names(maps:get(url_query_redact_keys, Env, [])), Key =/= ~""
         ],
         request_headers => names(maps:get(request_headers, Env, [])),
-        sensitive_headers => lists:usort(
-            ?SENSITIVE_HEADERS ++ names(maps:get(sensitive_headers, Env, []))
-        ),
+        sensitive_headers => ?SENSITIVE_HEADERS ++
+            [
+                Name
+             || Name <- names(maps:get(sensitive_headers, Env, [])),
+                not lists:member(Name, ?SENSITIVE_HEADERS)
+            ],
         response_headers => names(maps:get(response_headers, Env, [])),
         opt_in_attributes =>
             case maps:get(opt_in_attributes, Env, []) of
@@ -88,6 +93,7 @@ options() ->
             end
     }.
 
+-spec forwarded_headers(dynamic()) -> [binary()].
 forwarded_headers(true) ->
     [~"x-forwarded-for", ~"forwarded"];
 forwarded_headers(Headers) when is_list(Headers) ->
@@ -95,6 +101,7 @@ forwarded_headers(Headers) when is_list(Headers) ->
 forwarded_headers(_) ->
     [].
 
+-spec names(dynamic()) -> [binary()].
 names(Names) when is_list(Names) ->
     [otel_nova_http:lowercase(Name) || Name <- Names, is_binary(Name)];
 names(_) ->
@@ -102,7 +109,7 @@ names(_) ->
 
 %% Each group of attributes is built on its own, so a failure in one leaves
 %% the others on the span.
--spec span(cowboy_req:req(), binary(), options()) -> opentelemetry:attributes_map().
+-spec span(cowboy_req:req(), binary(), options()) -> attributes().
 span(Req, Method, Opts) ->
     Base = safely(fun() -> base(Req, Method, Opts) end, #{'http.request.method' => Method}),
     Query = safely(fun() -> query(Req, Opts) end, #{}),
@@ -158,7 +165,7 @@ request_headers(Req, #{request_headers := Names, sensitive_headers := Sensitive}
     ],
     otel_nova_http:header_attributes(~"http.request.header.", Headers, Sensitive).
 
--spec response_headers(cowboy:http_headers(), options()) -> opentelemetry:attributes_map().
+-spec response_headers(cowboy:http_headers(), options()) -> attributes().
 response_headers(Headers, #{response_headers := Names, sensitive_headers := Sensitive}) ->
     Captured = [{Name, Value} || Name := Value <- Headers, lists:member(Name, Names)],
     otel_nova_http:header_attributes(~"http.response.header.", Captured, Sensitive).
@@ -187,8 +194,7 @@ opt_in(Req, Attrs, #{opt_in_attributes := OptIn}) ->
     },
     maps:with(OptIn, All).
 
--spec body_sizes(options(), non_neg_integer(), non_neg_integer()) ->
-    opentelemetry:attributes_map().
+-spec body_sizes(options(), non_neg_integer(), non_neg_integer()) -> attributes().
 body_sizes(#{opt_in_attributes := OptIn}, ReqLength, RespLength) ->
     maps:with(OptIn, #{
         'http.request.body.size' => ReqLength, 'http.response.body.size' => RespLength
@@ -198,7 +204,7 @@ body_sizes(#{opt_in_attributes := OptIn}, ReqLength, RespLength) ->
 %% the method and scheme are normalised, and the server address and port are
 %% only recorded for hosts on the metric_server_hosts allowlist, with the
 %% port taken from the socket rather than the Host header.
--spec metric(cowboy_req:req(), binary(), options()) -> opentelemetry:attributes_map().
+-spec metric(cowboy_req:req(), binary(), options()) -> attributes().
 metric(Req, Method, #{metric_server_hosts := Hosts}) ->
     Attrs = #{
         'http.request.method' => Method,

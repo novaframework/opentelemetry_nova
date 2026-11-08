@@ -67,7 +67,7 @@ both spans and metrics. Spans keep the sent value as
     resp_body_length :: non_neg_integer(),
     metric_attrs :: map(),
     error_type :: binary() | undefined,
-    opts :: otel_nova_attributes:options() | undefined,
+    opts :: map() | undefined,
     response_header_attrs :: map(),
     extra_metric_attrs :: map()
 }).
