@@ -2,7 +2,9 @@
 -moduledoc false.
 
 -export([method/1, scheme/1, span_method/1, client_address/3, is_utf8/1]).
--export([redact_query/2, lowercase/1, header_attributes/3]).
+-export([redact_query/2, lowercase/1, header_attributes/3, error_type/2, log_failure/4]).
+
+-include_lib("kernel/include/logger.hrl").
 
 -define(KNOWN_METHODS, [
     ~"GET", ~"HEAD", ~"POST", ~"PUT", ~"DELETE", ~"CONNECT", ~"OPTIONS", ~"TRACE", ~"PATCH"
@@ -161,3 +163,30 @@ trim_trailing(Bin) ->
         true -> trim_trailing(binary:part(Bin, 0, byte_size(Bin) - 1));
         false -> Bin
     end.
+
+-spec error_type(integer(), binary() | undefined) -> binary().
+error_type(Code, undefined) -> integer_to_binary(Code);
+error_type(_Code, Tag) -> Tag.
+
+%% Cowboy logs the arguments and state of a crashing stream handler, which
+%% include the request headers and cookies. Instrumentation must never crash,
+%% and what it logs carries no request data.
+-spec log_failure(atom(), error | exit | throw, term(), [tuple()]) -> ok.
+log_failure(Callback, Class, Reason, Stacktrace) ->
+    ?LOG_WARNING(#{
+        what => otel_nova_instrumentation_failed,
+        callback => Callback,
+        class => Class,
+        reason => reason_tag(Reason),
+        stacktrace => [strip_args(Frame) || Frame <- Stacktrace]
+    }),
+    ok.
+
+reason_tag(Reason) when is_atom(Reason) -> Reason;
+reason_tag(Reason) when is_tuple(Reason), is_atom(element(1, Reason)) -> element(1, Reason);
+reason_tag(_Reason) -> unknown.
+
+strip_args({Module, Function, Args, Location}) when is_list(Args) ->
+    {Module, Function, length(Args), Location};
+strip_args(Frame) ->
+    Frame.

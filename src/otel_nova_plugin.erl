@@ -42,7 +42,7 @@ pre_request(Req, Env, _Opts, State) ->
         instrument(Req, Env)
     catch
         Class:Reason:Stacktrace ->
-            otel_nova_stream_h:log_failure(pre_request, Class, Reason, Stacktrace)
+            otel_nova_http:log_failure(pre_request, Class, Reason, Stacktrace)
     end,
     {ok, Req, State}.
 
@@ -51,7 +51,7 @@ post_request(Req, _Env, _Opts, State) ->
         record_crash(Req)
     catch
         Class:Reason:Stacktrace ->
-            otel_nova_stream_h:log_failure(post_request, Class, Reason, Stacktrace)
+            otel_nova_http:log_failure(post_request, Class, Reason, Stacktrace)
     end,
     {ok, Req, State}.
 
@@ -152,11 +152,11 @@ formatted_span_name(Mod, Fun, Method, Route) ->
         Name when is_binary(Name) ->
             Name;
         _ ->
-            otel_nova_stream_h:log_failure(span_name_formatter, error, invalid_span_name, []),
+            otel_nova_http:log_failure(span_name_formatter, error, invalid_span_name, []),
             default_span_name(Method, Route)
     catch
         Class:Reason:Stacktrace ->
-            otel_nova_stream_h:log_failure(span_name_formatter, Class, Reason, Stacktrace),
+            otel_nova_http:log_failure(span_name_formatter, Class, Reason, Stacktrace),
             default_span_name(Method, Route)
     end.
 

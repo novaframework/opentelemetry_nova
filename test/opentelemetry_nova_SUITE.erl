@@ -387,9 +387,10 @@ stream_handler_url_query_options(_Config) ->
     ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))),
     ok = application:set_env(opentelemetry_nova, url_query, true),
     ok = application:set_env(opentelemetry_nova, url_query_redact_keys, not_a_list),
-    Attrs = span_attributes(stream_opts(), Req),
-    ?assertNot(maps:is_key('url.query', Attrs)),
-    ?assertEqual(~"/search", maps:get('url.path', Attrs)).
+    ?assertEqual(
+        ~"session_id=1&Tenant=a&token=REDACTED&q=x",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ).
 
 stream_handler_captures_request_headers(_Config) ->
     ok = application:set_env(opentelemetry_nova, request_headers, [
