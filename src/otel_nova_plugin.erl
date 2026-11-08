@@ -26,10 +26,10 @@ keeps the default name.
 
 Also register it as a `post_request` plugin. When Nova reports a controller
 or plugin crash in `crash_info` and renders a 5xx (or an unknown status), it
-sets `error.type` on the server span to
-the crash reason (the reason atom, the tag of a tagged tuple, or the class),
-sets the span status to error and reports the tag to the stream handler,
-which uses it as the `error.type` metric attribute of a 5xx response.
+sets `error.type` on the server span to the crash reason (the reason atom,
+the tag of a tagged tuple, or the class), sets the span status to error and
+reports the tag to the stream handler, which uses it as the `error.type`
+metric attribute of a 5xx response.
 """.
 %% Implements nova_plugin behaviour callbacks.
 %% The -behaviour directive is omitted because nova is only a test dependency.
@@ -205,8 +205,9 @@ enrich_logger_metadata(SpanCtx) ->
 %% are trusted as is. Otherwise the template is rebuilt from the request path
 %% the way Nova's router sees it: empty, "." and ".." segments resolved, the
 %% catch-all tail that Nova reports as `pathinfo` folded into `[...]` and bound
-%% segments replaced by their names. A label is only emitted when that is possible, so the set of
-%% `http.route` values stays bounded by the route table.
+%% segments replaced by their names. A label is only emitted when that is
+%% possible, so the set of `http.route` values stays bounded by the route
+%% table.
 route(Req = #{nova_route := Route}) when is_binary(Route) ->
     case otel_nova_http:is_utf8(Route) of
         true -> Route;

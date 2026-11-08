@@ -4,7 +4,10 @@
 -export([execute/2]).
 
 execute(Req = #{path := <<"/nova/", Action/binary>>}, Env) ->
-    CrashPlugin = [{fun otel_nova_test_controller:crash_plugin/4, #{}} || Action =:= ~"plugin_crash"],
+    CrashPlugin = [
+        {fun otel_nova_test_controller:crash_plugin/4, #{}}
+     || Action =:= ~"plugin_crash"
+    ],
     Plugins = [
         {pre_request, [{fun otel_nova_plugin:pre_request/4, #{}} | CrashPlugin]},
         {post_request, [{fun otel_nova_plugin:post_request/4, #{}}]}

@@ -26,7 +26,6 @@ all() ->
         untrusted_context_does_not_force_sampling,
         untrusted_context_starts_new_trace_with_link,
         map_config_delegates_to_sampler,
-        map_config_defaults_to_always_on,
         description_includes_delegate,
         trust_callback_decides_per_request,
         crashing_trust_callback_does_not_trust
@@ -140,15 +139,9 @@ map_config_delegates_to_sampler(_Config) ->
     ),
     ?assertMatch({?DROP, _, _}, decide(Drop, ~"/users")),
     ?assertMatch({?RECORD_AND_SAMPLE, _, _}, decide(Keep, ~"/users")),
-    ?assertMatch({?DROP, _, _}, decide(Keep, ~"/metrics")).
-
-map_config_defaults_to_always_on(_Config) ->
-    Sampler = otel_sampler:new({otel_nova_sampler, #{exclude => [~"GET /metrics"]}}),
-    ?assertMatch({?RECORD_AND_SAMPLE, _, _}, decide(Sampler, ~"/users")),
-    ?assertMatch({?DROP, _, _}, decide(Sampler, ~"/metrics")),
-    ?assertMatch(
-        {?RECORD_AND_SAMPLE, _, _}, decide(otel_sampler:new({otel_nova_sampler, #{}}), ~"/metrics")
-    ).
+    ?assertMatch({?DROP, _, _}, decide(Keep, ~"/metrics")),
+    Default = otel_sampler:new({otel_nova_sampler, #{}}),
+    ?assertMatch({?RECORD_AND_SAMPLE, _, _}, decide(Default, ~"/metrics")).
 
 description_includes_delegate(_Config) ->
     Sampler = otel_sampler:new(

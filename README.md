@@ -363,7 +363,7 @@ Server spans are created for every HTTP request with the following attributes:
 | `http.response.body.size` | Response body bytes sent, set when the span ends (opt-in) |
 | `http.request.header.<name>` | Request headers listed in `request_headers` |
 | `http.response.header.<name>` | Response headers listed in `response_headers` |
-| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors |
+| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors, or the Cowboy reason (`socket_error`, ...) when the stream ends without a response |
 | `nova.app` | Nova application name |
 | `nova.controller` | Controller module |
 | `nova.action` | Action function |

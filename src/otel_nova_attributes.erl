@@ -219,8 +219,9 @@ server(Req, Hosts) ->
     {_IP, Port} = cowboy_req:sock(Req),
     #{'server.address' => Address, 'server.port' => Port}.
 
--spec final_metric(map(), binary() | undefined, integer() | undefined, binary() | undefined, map()) ->
-    map().
+-spec final_metric(
+    map(), binary() | undefined, integer() | undefined, binary() | undefined, map()
+) -> map().
 final_metric(MetricAttrs, Route, StatusCode, ErrorType, Extra) ->
     Builtin = maps:merge(MetricAttrs, maps:merge(route(Route), status(StatusCode, ErrorType))),
     maps:merge(Extra, Builtin).
