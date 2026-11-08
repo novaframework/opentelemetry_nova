@@ -60,8 +60,11 @@ options() ->
                 {Mod, Fun} when is_atom(Mod), is_atom(Fun) -> {Mod, Fun};
                 _ -> false
             end,
-        url_query => maps:get(url_query, Env, true) =:= true,
-        url_query_redact_keys => names(maps:get(url_query_redact_keys, Env, [])),
+        url_query => maps:get(url_query, Env, false) =:= true,
+        url_query_redact_keys => [
+            Key
+         || Key <- names(maps:get(url_query_redact_keys, Env, [])), Key =/= ~""
+        ],
         request_headers => names(maps:get(request_headers, Env, [])),
         sensitive_headers =>
             case maps:get(sensitive_headers, Env, ?SENSITIVE_HEADERS) of

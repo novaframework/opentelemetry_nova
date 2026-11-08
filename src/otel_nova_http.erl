@@ -17,18 +17,29 @@
     ~"x-goog-signature",
     ~"x-amz-signature",
     ~"x-amz-credential",
-    ~"x-amz-security-token",
-    ~"access_token",
-    ~"id_token",
-    ~"refresh_token",
+    ~"x-amz-security-token"
+]).
+
+-define(REDACTED_QUERY_FRAGMENTS, [
     ~"token",
-    ~"api_key",
-    ~"apikey",
-    ~"key",
-    ~"password",
     ~"secret",
+    ~"pass",
+    ~"pwd",
+    ~"key",
+    ~"sig",
+    ~"auth",
+    ~"session",
+    ~"sid",
     ~"code",
-    ~"state"
+    ~"otp",
+    ~"nonce",
+    ~"jwt",
+    ~"email",
+    ~"ticket",
+    ~"cred",
+    ~"saml",
+    ~"state",
+    ~"hash"
 ]).
 
 -spec method(binary()) -> binary().
@@ -70,25 +81,33 @@ header_address(~"x-real-ip", Value) ->
 is_utf8(Bin) ->
     unicode:characters_to_binary(Bin) =:= Bin.
 
-%% Only the values of matching keys are replaced; everything else, including
-%% the encoding of the other pairs, is kept as sent.
+%% The value of a key that equals a semconv key or contains one of the
+%% fragments is replaced, and so is an entry without a value, which may be a
+%% bare token. Everything else, including the encoding of the other pairs, is
+%% kept as sent.
 -spec redact_query(binary(), [binary()]) -> binary().
-redact_query(Qs, ExtraKeys) ->
-    Keys = ?REDACTED_QUERY_KEYS ++ [lowercase(Key) || Key <- ExtraKeys],
+redact_query(Qs, ExtraFragments) ->
+    Fragments = ?REDACTED_QUERY_FRAGMENTS ++ ExtraFragments,
     Pairs = binary:split(Qs, ~"&", [global]),
-    iolist_to_binary(lists:join(~"&", [redact_pair(Pair, Keys) || Pair <- Pairs])).
+    iolist_to_binary(lists:join(~"&", [redact_pair(Pair, Fragments) || Pair <- Pairs])).
 
 -spec redact_pair(binary(), [binary()]) -> binary().
-redact_pair(Pair, Keys) ->
+redact_pair(~"", _Fragments) ->
+    ~"";
+redact_pair(Pair, Fragments) ->
     case binary:split(Pair, ~"=") of
         [Key, _Value] ->
-            case lists:member(query_key(Key), Keys) of
+            case is_secret_key(query_key(Key), Fragments) of
                 true -> <<Key/binary, "=REDACTED">>;
                 false -> Pair
             end;
-        [_Key] ->
-            Pair
+        [_Bare] ->
+            ~"REDACTED"
     end.
+
+is_secret_key(Key, Fragments) ->
+    lists:member(Key, ?REDACTED_QUERY_KEYS) orelse
+        lists:any(fun(Fragment) -> binary:match(Key, Fragment) =/= nomatch end, Fragments).
 
 query_key(Key) ->
     Plain = binary:replace(Key, ~"+", ~" ", [global]),

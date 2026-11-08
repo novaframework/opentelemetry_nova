@@ -29,9 +29,9 @@ Options, read from the `opentelemetry_nova` application environment:
   and links to the remote parent. `{Mod, Fun}` decides per request:
   `Mod:Fun(Req)` returns `true` to trust it; any other result or a crash means
   `false`.
-* `url_query` (default `true`): set `url.query`, with the values of secret
-  keys replaced by `REDACTED`.
-* `url_query_redact_keys` (default `[]`): more query keys to redact.
+* `url_query` (default `false`): set `url.query`, with the values of
+  secret-looking keys replaced by `REDACTED`.
+* `url_query_redact_keys` (default `[]`): more key fragments to redact.
 * `request_headers` and `response_headers` (default `[]`): lowercase header
   names recorded as `http.request.header.<name>` and
   `http.response.header.<name>` span attributes.

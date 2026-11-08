@@ -366,31 +366,59 @@ stream_handler_tags_stream_failure(_Config) ->
 stream_handler_sets_redacted_url_query(_Config) ->
     Req = (make_req(~"GET", ~"/search"))#{
         qs =>
-            ~"q=a+b&token=abc&Signature=x%2F&X-AMZ-Credential=y&b=%41&flag&p%61ssword=s&Code=1&key"
+            ~"q=a+b&my_token=abc&Signature=x%2F&X-AMZ-Credential=y&b=%41&flag&p%61ssword=s&Code=1&&userEmail=e&page=2"
     },
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))),
+    ok = application:set_env(opentelemetry_nova, url_query, true),
     ?assertEqual(
-        ~"q=a+b&token=REDACTED&Signature=REDACTED&X-AMZ-Credential=REDACTED&b=%41&flag&p%61ssword=REDACTED&Code=REDACTED&key",
+        ~"q=a+b&my_token=REDACTED&Signature=REDACTED&X-AMZ-Credential=REDACTED&b=%41&REDACTED&p%61ssword=REDACTED&Code=REDACTED&&userEmail=REDACTED&page=2",
         maps:get('url.query', span_attributes(stream_opts(), Req))
     ),
+    [
+        ?assertEqual(
+            <<Key/binary, "=REDACTED">>,
+            maps:get(
+                'url.query',
+                span_attributes(stream_opts(), (make_req(~"GET", ~"/"))#{qs => <<Key/binary, "=v">>})
+            ),
+            Key
+        )
+     || Key <- [
+            ~"AWSAccessKeyId",
+            ~"X-Goog-Signature",
+            ~"X-Amz-Security-Token",
+            ~"pwd",
+            ~"Authorization",
+            ~"sessionid",
+            ~"sid",
+            ~"otp",
+            ~"nonce",
+            ~"jwt",
+            ~"ticket",
+            ~"SAMLResponse",
+            ~"state",
+            ~"hash"
+        ]
+    ],
     ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), make_req(~"GET", ~"/")))),
     Invalid = (make_req(~"GET", ~"/"))#{qs => <<"q=", 16#FF>>},
     ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Invalid))).
 
 stream_handler_url_query_options(_Config) ->
-    Req = (make_req(~"GET", ~"/search"))#{qs => ~"session_id=1&Tenant=a&token=t&q=x"},
-    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, [~"session_id", ~"TENANT"]),
+    Req = (make_req(~"GET", ~"/search"))#{qs => ~"tenant_id=1&Tenant=a&token=t&q=x"},
+    ok = application:set_env(opentelemetry_nova, url_query, true),
+    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, [~"TENANT", ~""]),
     ?assertEqual(
-        ~"session_id=REDACTED&Tenant=REDACTED&token=REDACTED&q=x",
+        ~"tenant_id=REDACTED&Tenant=REDACTED&token=REDACTED&q=x",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, not_a_list),
+    ?assertEqual(
+        ~"tenant_id=1&Tenant=a&token=REDACTED&q=x",
         maps:get('url.query', span_attributes(stream_opts(), Req))
     ),
     ok = application:set_env(opentelemetry_nova, url_query, false),
-    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))),
-    ok = application:set_env(opentelemetry_nova, url_query, true),
-    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, not_a_list),
-    ?assertEqual(
-        ~"session_id=1&Tenant=a&token=REDACTED&q=x",
-        maps:get('url.query', span_attributes(stream_opts(), Req))
-    ).
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))).
 
 stream_handler_captures_request_headers(_Config) ->
     ok = application:set_env(opentelemetry_nova, request_headers, [
