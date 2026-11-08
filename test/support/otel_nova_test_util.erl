@@ -34,14 +34,22 @@ span_attrs(#span{attributes = Attributes}) ->
     otel_attributes:map(Attributes).
 
 %% Spans of earlier requests can still arrive, so wait for the one with Path.
+%% Cowboy may end the stream, and so the span, after the client has read the
+%% response, so it flushes until the span shows up.
 -spec receive_span(binary()) -> #span{}.
 receive_span(Path) ->
+    receive_span(Path, 50).
+
+receive_span(Path, 0) ->
+    error({timeout_waiting_for_span, Path});
+receive_span(Path, Attempts) ->
+    otel_tracer_provider:force_flush(),
     receive
         {span, Span} ->
             case span_attrs(Span) of
                 #{'url.path' := Path} -> Span;
-                _ -> receive_span(Path)
+                _ -> receive_span(Path, Attempts)
             end
-    after 5000 ->
-        error({timeout_waiting_for_span, Path})
+    after 100 ->
+        receive_span(Path, Attempts - 1)
     end.

@@ -374,14 +374,14 @@ plugin_crash_sets_error_type(_Config) ->
 
 thrown_status_is_not_tagged(_Config) ->
     {503, _} = request(?NOVA_PORT, "/nova/throw_status", []),
-    [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
+    Server = otel_nova_test_util:receive_span(~"/nova/throw_status"),
     ?assertEqual(~"503", maps:get('error.type', otel_nova_test_util:span_attrs(Server))).
 
 %% A crashing security function stops the middleware chain before any plugin
 %% sees crash_info.
 security_crash_keeps_status_error_type(_Config) ->
     {500, _} = request(?NOVA_PORT, "/nova/security_crash", []),
-    [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
+    Server = otel_nova_test_util:receive_span(~"/nova/security_crash"),
     ?assertEqual(~"500", maps:get('error.type', otel_nova_test_util:span_attrs(Server))).
 
 response_headers_are_captured(_Config) ->
@@ -400,7 +400,7 @@ response_headers_are_captured(_Config) ->
 
 controller_adds_metric_attributes(_Config) ->
     {200, _} = request(?NOVA_PORT, "/nova/labelled", []),
-    _ = receive_spans(1),
+    _ = otel_nova_test_util:receive_span(~"/nova/labelled"),
     await_metric(
         ~"http_server_request_duration_seconds_count\\{[^}]*http_route=\"/nova/labelled\"[^}]*tenant=\"acme\"[^}]*\\} 1"
     ),
@@ -414,7 +414,7 @@ controller_adds_metric_attributes(_Config) ->
 
 assert_crash_tagged(Path, Tag) ->
     {500, _} = request(?NOVA_PORT, Path, []),
-    [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
+    Server = otel_nova_test_util:receive_span(list_to_binary(Path)),
     Attrs = otel_nova_test_util:span_attrs(Server),
     ?assertEqual(Tag, maps:get('error.type', Attrs)),
     ?assertEqual(500, maps:get('http.response.status_code', Attrs)),
