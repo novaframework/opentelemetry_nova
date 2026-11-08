@@ -281,9 +281,9 @@ Notes:
 - `client.address` uses `X-Forwarded-For` or `Forwarded` only when
   `trust_forwarded_for` is enabled, and only when the address in it is a valid
   IP address. See [Options](#4-options).
-- `http.route` is rebuilt from the request path and the binding values, since
-  Nova does not hand the matched route template to plugins. Two kinds of path
-  get a wrong label: a literal segment equal to a binding value (`/users/users`
+- `http.route` is taken from the `nova_route` key that newer Nova versions
+  put in the Req. With older Nova versions it is rebuilt from the request path
+  and the binding values. The rebuilt label is wrong for two kinds of path: a literal segment equal to a binding value (`/users/users`
   on `/users/:id` becomes `/:id/:id`), and two bindings with the same value
   (`/teams/7/users/7` on `/teams/:team/users/:user` shows one of the two names
   in both places). The labels stay bounded; only their text is wrong.

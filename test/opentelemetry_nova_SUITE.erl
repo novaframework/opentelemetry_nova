@@ -46,6 +46,8 @@ all() ->
         plugin_folds_catch_all_tail_into_route,
         plugin_canonicalises_route,
         plugin_omits_undeterminable_route,
+        plugin_prefers_route_from_nova,
+        plugin_ignores_invalid_route_from_nova,
         plugin_sets_logger_metadata_with_trace_ids,
         plugin_skips_logger_metadata_without_valid_span,
         stream_handler_restores_context_on_terminate,
@@ -393,6 +395,23 @@ plugin_omits_undeterminable_route(_Config) ->
     Req = Req0#{extra_state => #{pathinfo => [~"other.css"]}},
     ?assertEqual(undefined, plugin_route(Req, #{})).
 
+plugin_prefers_route_from_nova(_Config) ->
+    Req0 = make_req(~"GET", ~"/users/users"),
+    Req = Req0#{bindings => #{~"id" => ~"users"}, nova_route => ~"/users/:id"},
+    ?assertEqual(~"/users/:id", plugin_route(Req, #{})),
+    Assets0 = make_req(~"GET", ~"/assets/a/b.css"),
+    Assets = Assets0#{
+        extra_state => #{pathinfo => [~"other.css"]}, nova_route => ~"/assets/[...]"
+    },
+    ?assertEqual(~"/assets/[...]", plugin_route(Assets, #{})).
+
+plugin_ignores_invalid_route_from_nova(_Config) ->
+    Req0 = make_req(~"GET", ~"/api/health"),
+    [
+        ?assertEqual(~"/api/health", plugin_route(Req0#{nova_route => Route}, #{}), Route)
+     || Route <- [<<"/bad", 16#FF>>, '/api/:id', 42]
+    ].
+
 plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     logger:unset_process_metadata(),
     Req = make_req(<<"GET">>, <<"/users">>),
@@ -626,6 +645,7 @@ plugin_route(Req, Env) ->
     State = run_plugin(DownReq, Env, State0),
     {_Cmds, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"OK"}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
     receive
         {span, Span} ->
             {Route, Expected} =

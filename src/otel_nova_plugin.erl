@@ -10,9 +10,11 @@ the server span. It also sets `http.route`, the span name and the `nova.*`
 attributes, adds `trace_id`/`span_id` to the logger process metadata and
 reports the route to the stream handler for the HTTP metrics.
 
-`http.route` is the route template: bound segments become `:name` and the
-tail matched by a catch-all such as `/assets/[...]` becomes `[...]`. When the
-template cannot be determined the attribute is left out rather than set to
+`http.route` is the route template. Nova versions that store the matched
+template in the Req under `nova_route` provide it directly. Otherwise it is
+rebuilt from the path: bound segments become `:name` and the tail matched by
+a catch-all such as `/assets/[...]` becomes `[...]`. When the template cannot
+be determined the attribute is left out rather than set to
 the raw path, so the number of metric series stays bounded. Instrumentation
 failures are logged without request data and never fail the request.
 """.
@@ -104,12 +106,21 @@ enrich_logger_metadata(SpanCtx) ->
             ok
     end.
 
-%% The route template is rebuilt from the request path the way Nova's router
-%% sees it: empty, "." and ".." segments resolved, the catch-all tail that Nova
-%% reports as `pathinfo` folded into `[...]` and bound segments replaced by
-%% their names. A label is only emitted when that is possible, so the set of
+%% Nova versions that put the matched template in the Req under `nova_route`
+%% are trusted as is. Otherwise the template is rebuilt from the request path
+%% the way Nova's router sees it: empty, "." and ".." segments resolved, the
+%% catch-all tail that Nova reports as `pathinfo` folded into `[...]` and bound
+%% segments replaced by their names. A label is only emitted when that is possible, so the set of
 %% `http.route` values stays bounded by the route table.
-route(Req = #{path := Path}) when is_binary(Path) ->
+route(Req = #{nova_route := Route}) when is_binary(Route) ->
+    case otel_nova_http:is_utf8(Route) of
+        true -> Route;
+        false -> rebuild_route(Req)
+    end;
+route(Req) ->
+    rebuild_route(Req).
+
+rebuild_route(Req = #{path := Path}) when is_binary(Path) ->
     Segments = canonical_segments(Path),
     case split_pathinfo(Segments, Req) of
         {ok, Fixed, Tail} ->
@@ -118,7 +129,7 @@ route(Req = #{path := Path}) when is_binary(Path) ->
         error ->
             undefined
     end;
-route(_Req) ->
+rebuild_route(_Req) ->
     undefined.
 
 join_route([]) -> ~"/";
