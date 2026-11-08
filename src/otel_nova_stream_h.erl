@@ -69,8 +69,19 @@ both spans and metrics. Spans keep the sent value as
     response_headers :: [binary()],
     sensitive_headers :: [binary()],
     response_header_attrs :: map(),
-    opt_in :: [atom()]
+    opt_in :: [atom()],
+    extra_metric_attrs :: map()
 }).
+
+-define(BUILTIN_METRIC_ATTRIBUTES, [
+    'http.request.method',
+    'url.scheme',
+    'http.route',
+    'http.response.status_code',
+    'error.type',
+    'server.address',
+    'server.port'
+]).
 
 -define(SENSITIVE_HEADERS, [
     ~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"
@@ -89,7 +100,8 @@ init(StreamID, Req, Opts) ->
         response_headers = [],
         sensitive_headers = ?SENSITIVE_HEADERS,
         response_header_attrs = #{},
-        opt_in = []
+        opt_in = [],
+        extra_metric_attrs = #{}
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
     {Commands, Next} = cowboy_stream:init(StreamID, Req1, Opts),
@@ -108,6 +120,14 @@ info(_StreamID, {otel_nova_route, Route}, State) when is_binary(Route) ->
     {[], State#state{http_route = Route}};
 info(_StreamID, {otel_nova_error_type, Tag}, State) when is_binary(Tag) ->
     {[], State#state{error_type = Tag}};
+info(
+    _StreamID, {otel_nova_metric_attributes, Attrs}, State = #state{extra_metric_attrs = Extra}
+) when
+    is_map(Attrs)
+->
+    Valid =
+        #{Key => Value || Key := Value <- Attrs, otel_attributes:is_valid_attribute(Key, Value)},
+    {[], State#state{extra_metric_attrs = maps:merge(Extra, Valid)}};
 info(StreamID, Info, State0) ->
     State1 = safely(info, fun() -> observe(Info, State0) end, State0),
     State = safely(info, fun() -> capture_response_headers(Info, State1) end, State1),
@@ -267,13 +287,15 @@ record_metrics(#state{
     req_body_length = ReqBodyLen,
     resp_body_length = RespBodyLen,
     metric_attrs = MetricAttrs,
-    error_type = Tag
+    error_type = Tag,
+    extra_metric_attrs = Extra
 }) ->
     Duration =
         erlang:convert_time_unit(erlang:monotonic_time() - ReqStart, native, microsecond) / 1000000,
-    FinalAttrs = maps:merge(
+    BuiltinAttrs = maps:merge(
         MetricAttrs, maps:merge(route_attrs(Route), status_attrs(StatusCode, Tag))
     ),
+    FinalAttrs = maps:merge(maps:without(?BUILTIN_METRIC_ATTRIBUTES, Extra), BuiltinAttrs),
     ?histogram_record('http.server.request.duration', Duration, FinalAttrs),
     record_if_positive('http.server.request.body.size', ReqBodyLen, FinalAttrs),
     record_if_positive('http.server.response.body.size', RespBodyLen, FinalAttrs),

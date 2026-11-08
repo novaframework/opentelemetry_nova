@@ -1,6 +1,6 @@
 -module(otel_nova_test_controller).
 
--export([ok/1, crash/1, crash_tuple/1, throw_status/1]).
+-export([ok/1, crash/1, crash_tuple/1, throw_status/1, labelled/1]).
 -export([crash_security/1, crash_plugin/4]).
 -export([span_name/2, crashing_span_name/2, invalid_span_name/2]).
 -export([trust_internal/1, crashing_trust/1]).
@@ -16,6 +16,12 @@ crash_tuple(Req) ->
 
 throw_status(_Req) ->
     throw({503, unavailable}).
+
+labelled(Req) ->
+    ok = opentelemetry_nova:add_metric_attributes(Req, #{
+        tenant => ~"acme", 'http.route' => ~"/overridden"
+    }),
+    {status, 200}.
 
 crash_security(_Req) ->
     error(security_boom).

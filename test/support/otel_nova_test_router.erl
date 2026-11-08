@@ -37,4 +37,5 @@ execute(Req = #{path := Path}, Env) ->
 nova_callback(~"crash") -> fun otel_nova_test_controller:crash/1;
 nova_callback(~"crash_tuple") -> fun otel_nova_test_controller:crash_tuple/1;
 nova_callback(~"throw_status") -> fun otel_nova_test_controller:throw_status/1;
+nova_callback(~"labelled") -> fun otel_nova_test_controller:labelled/1;
 nova_callback(_) -> fun otel_nova_test_controller:ok/1.

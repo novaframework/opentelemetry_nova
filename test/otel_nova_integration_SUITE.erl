@@ -24,7 +24,8 @@
     thrown_status_is_not_tagged/1,
     plugin_crash_sets_error_type/1,
     security_crash_keeps_status_error_type/1,
-    response_headers_are_captured/1
+    response_headers_are_captured/1,
+    controller_adds_metric_attributes/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -64,7 +65,8 @@ all() ->
         thrown_status_is_not_tagged,
         plugin_crash_sets_error_type,
         security_crash_keeps_status_error_type,
-        response_headers_are_captured
+        response_headers_are_captured,
+        controller_adds_metric_attributes
     ].
 
 init_per_suite(Config) ->
@@ -395,6 +397,16 @@ response_headers_are_captured(_Config) ->
     ?assertEqual([~"2"], maps:get(~"http.response.header.content-length", Attrs)),
     ?assertEqual([~"Cowboy"], maps:get(~"http.response.header.server", Attrs)),
     ?assertNot(maps:is_key(~"http.response.header.transfer-encoding", Attrs)).
+
+controller_adds_metric_attributes(_Config) ->
+    {200, _} = request(?NOVA_PORT, "/nova/labelled", []),
+    _ = receive_spans(1),
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{[^}]*http_route=\"/nova/labelled\"[^}]*tenant=\"acme\"[^}]*\\} 1"
+    ),
+    Metrics = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(nomatch, binary:match(Metrics, ~"/overridden")),
+    ?assertNotMatch({match, _}, re:run(Metrics, ~"http_server_active_requests\\{[^}]*tenant=")).
 
 %%--------------------------------------------------------------------
 %% Helpers

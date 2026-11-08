@@ -69,7 +69,8 @@ all() ->
         metrics_server_attributes_need_allowlist,
         metrics_error_type_in_metrics,
         metrics_active_requests,
-        metrics_body_sizes
+        metrics_body_sizes,
+        metrics_include_added_attributes
     ].
 
 init_per_suite(Config) ->
@@ -881,6 +882,40 @@ metrics_body_sizes(_Config) ->
         ?assertEqual(byte_size(RespBody), DP#histogram_datapoint.sum),
         ?assert(DP#histogram_datapoint.count >= 1)
     end).
+
+metrics_include_added_attributes(_Config) ->
+    Req = make_req(~"POST", ~"/labelled"),
+    {State0, DownReq} = start_stream(1, Req),
+    State1 = run_plugin(DownReq, #{}, State0),
+    ok = opentelemetry_nova:add_metric_attributes(DownReq, #{
+        tenant => ~"a", plan => ~"free", 'http.route' => ~"/spoofed", bad => {nested, #{}}
+    }),
+    ok = opentelemetry_nova:add_metric_attributes(DownReq, #{plan => ~"pro"}),
+    ok = opentelemetry_nova:add_metric_attributes(maps:remove(otel_nova_ctx, DownReq), #{x => 1}),
+    State2 = forward_casts(1, State1),
+    {_Cmds1, State3} = otel_nova_stream_h:data(1, fin, ~"body", State2),
+    {_Cmds2, State4} = otel_nova_stream_h:info(1, {response, 201, #{}, ~"ok"}, State3),
+    otel_nova_stream_h:terminate(1, normal, State4),
+    drain_spans(),
+    otel_meter_server:force_flush(),
+    Expected = #{tenant => ~"a", plan => ~"pro", 'http.route' => ~"/labelled"},
+    [
+        ?assertReceiveMetric(Name, fun(#metric{data = #histogram{datapoints = Datapoints}}) ->
+            [Attrs] = [
+                A
+             || #histogram_datapoint{attributes = A = #{'http.response.status_code' := 201}} <-
+                    Datapoints
+            ],
+            ?assertEqual(Expected, maps:with([tenant, plan, 'http.route'], Attrs)),
+            ?assertNot(maps:is_key(bad, Attrs)),
+            ?assertNot(maps:is_key(x, Attrs))
+        end)
+     || Name <- [
+            'http.server.request.duration',
+            'http.server.request.body.size',
+            'http.server.response.body.size'
+        ]
+    ].
 
 %%--------------------------------------------------------------------
 %% Helpers

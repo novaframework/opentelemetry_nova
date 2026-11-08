@@ -398,15 +398,37 @@ master):
 
 | Metric | Type | Attributes |
 |--------|------|------------|
-| `http.server.request.duration` | Histogram (seconds) | method, scheme, status, route, error.type |
+| `http.server.request.duration` | Histogram (seconds) | method, scheme, status, route, error.type, added attributes |
 | `http.server.active_requests` | UpDown Counter (Prometheus gauge of in-flight requests) | method, scheme |
-| `http.server.request.body.size` | Histogram (bytes) | method, scheme, status, route, error.type |
-| `http.server.response.body.size` | Histogram (bytes) | method, scheme, status, route, error.type |
+| `http.server.request.body.size` | Histogram (bytes) | method, scheme, status, route, error.type, added attributes |
+| `http.server.response.body.size` | Histogram (bytes) | method, scheme, status, route, error.type, added attributes |
 
 Every attribute value is bounded: the method is one of the nine standard
 methods or `_OTHER`, the scheme is `http`, `https` or `_OTHER`, and the route
 is a template. `server.address` and `server.port` are added only when
 `metric_server_hosts` is set.
+
+### Per-request metric attributes
+
+A controller or plugin can add attributes to the duration and body size
+measurements of its request:
+
+```erlang
+show(Req = #{bindings := #{~"tenant" := Tenant}}) ->
+    ok = opentelemetry_nova:add_metric_attributes(Req, #{tenant_tier => tier(Tenant)}),
+    {json, #{}}.
+```
+
+Later calls are merged in, a later value winning. The built-in attributes
+(`http.request.method`, `url.scheme`, `http.route`,
+`http.response.status_code`, `error.type`, `server.address`, `server.port`)
+cannot be overridden, invalid attribute values are dropped, and
+`http.server.active_requests` does not get them. The call does nothing when
+the request does not pass through `otel_nova_stream_h`.
+
+Every distinct value becomes a separate series in every one of these
+metrics. Keeping the values bounded is up to you: use a tier or a plan, never
+a user, tenant or request id.
 
 ## Components
 
