@@ -244,14 +244,18 @@ finish_request(
     BodySizes = otel_nova_attributes:body_sizes(Opts, ReqBodyLen, RespBodyLen),
     _ = otel_span:set_attributes(SpanCtx, maps:merge(HeaderAttrs, BodySizes)),
     set_status_attributes(SpanCtx, StatusCode, Tag),
+    safely(terminate, fun() -> record_metrics(State) end, ok),
     _ = otel_span:end_span(SpanCtx),
-    safely(terminate, fun() -> end_active_request(State) end, ok),
-    safely(terminate, fun() -> record_metrics(State) end, ok).
+    safely(terminate, fun() -> end_active_request(State) end, ok).
 
 end_active_request(#state{metric_attrs = MetricAttrs}) ->
     ?updown_counter_add('http.server.active_requests', -1, MetricAttrs).
 
+%% The connection process has no attached context, so the server span is
+%% passed explicitly; with exemplars enabled the measurements then carry its
+%% trace and span id.
 record_metrics(#state{
+    span_ctx = SpanCtx,
     status_code = StatusCode,
     http_route = Route,
     req_start = ReqStart,
@@ -264,9 +268,10 @@ record_metrics(#state{
     Duration =
         erlang:convert_time_unit(erlang:monotonic_time() - ReqStart, native, microsecond) / 1000000,
     Attrs = otel_nova_attributes:final_metric(MetricAttrs, Route, StatusCode, Tag, Extra),
-    ?histogram_record('http.server.request.duration', Duration, Attrs),
-    record_if_positive('http.server.request.body.size', ReqBodyLen, Attrs),
-    record_if_positive('http.server.response.body.size', RespBodyLen, Attrs),
+    Ctx = otel_tracer:set_current_span(otel_ctx:new(), SpanCtx),
+    otel_histogram:record(Ctx, ?current_meter, 'http.server.request.duration', Duration, Attrs),
+    record_if_positive(Ctx, 'http.server.request.body.size', ReqBodyLen, Attrs),
+    record_if_positive(Ctx, 'http.server.response.body.size', RespBodyLen, Attrs),
     ok.
 
 set_status_attributes(_SpanCtx, undefined, _Tag) ->
@@ -290,9 +295,9 @@ set_status_attributes(SpanCtx, Code, _Tag) ->
 body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).
 
-record_if_positive(Name, Value, Attrs) when Value > 0 ->
-    ?histogram_record(Name, Value, Attrs);
-record_if_positive(_, _, _) ->
+record_if_positive(Ctx, Name, Value, Attrs) when Value > 0 ->
+    otel_histogram:record(Ctx, ?current_meter, Name, Value, Attrs);
+record_if_positive(_Ctx, _Name, _Value, _Attrs) ->
     ok.
 
 safely(Callback, Fun, Default) ->

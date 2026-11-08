@@ -10,6 +10,7 @@
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
+-include_lib("opentelemetry_experimental/src/otel_metric_exemplar.hrl").
 
 -define(assertReceiveMetric(Name, Fun),
     (fun() ->
@@ -70,11 +71,13 @@ all() ->
         metrics_error_type_in_metrics,
         metrics_active_requests,
         metrics_body_sizes,
-        metrics_include_added_attributes
+        metrics_include_added_attributes,
+        metrics_carry_exemplars_of_the_server_span
     ].
 
 init_per_suite(Config) ->
     application:ensure_all_started(opentelemetry),
+    ok = application:set_env(opentelemetry_experimental, exemplars_enabled, true),
     ok = application:set_env(opentelemetry_experimental, readers, [
         #{
             module => otel_metric_reader,
@@ -1000,6 +1003,36 @@ metrics_include_added_attributes(_Config) ->
             ?assertEqual(Expected, binary_keys(Attrs)),
             ?assertEqual(~"/labelled", maps:get('http.route', Attrs)),
             ?assertNot(maps:is_key('error.type', Attrs))
+        end)
+     || Name <- [
+            'http.server.request.duration',
+            'http.server.request.body.size',
+            'http.server.response.body.size'
+        ]
+    ].
+
+metrics_carry_exemplars_of_the_server_span(_Config) ->
+    Path = ~"/exemplar",
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"PUT", Path), stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:data(1, fin, ~"body", State0),
+    {_Cmds2, State2} = otel_nova_stream_h:info(1, {response, 202, #{}, ~"ok"}, State1),
+    otel_nova_stream_h:terminate(1, normal, State2),
+    otel_tracer_provider:force_flush(),
+    #span{trace_id = TraceId, span_id = SpanId} = otel_nova_test_util:receive_span(Path),
+    otel_meter_server:force_flush(),
+    [
+        ?assertReceiveMetric(Name, fun(#metric{data = #histogram{datapoints = Datapoints}}) ->
+            [Exemplars] = [
+                E
+             || #histogram_datapoint{
+                    attributes = #{'http.request.method' := ~"PUT"}, exemplars = E
+                } <- Datapoints
+            ],
+            ?assertMatch(
+                [#exemplar{trace_id = TraceId, span_id = SpanId} | _],
+                [X || X = #exemplar{trace_id = T} <- Exemplars, T =:= TraceId],
+                Name
+            )
         end)
      || Name <- [
             'http.server.request.duration',

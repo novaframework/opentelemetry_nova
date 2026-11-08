@@ -435,6 +435,17 @@ methods or `_OTHER`, the scheme is `http`, `https` or `_OTHER`, and the route
 is a template. `server.address` and `server.port` are added only when
 `metric_server_hosts` is set.
 
+The duration and body size histograms are recorded with the server span as
+context, so with exemplars enabled in the SDK each measurement can carry the
+trace and span id of its request:
+
+```erlang
+{opentelemetry_experimental, [{exemplars_enabled, true}]}
+```
+
+The default `trace_based` exemplar filter keeps exemplars only for sampled
+spans. `http.server.active_requests` has none.
+
 ### Per-request metric attributes
 
 A controller or plugin can add attributes to the duration and body size
