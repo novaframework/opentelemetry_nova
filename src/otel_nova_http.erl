@@ -1,7 +1,7 @@
 -module(otel_nova_http).
 -moduledoc false.
 
--export([method/1, scheme/1, span_method/1, client_address/2, is_utf8/1]).
+-export([method/1, scheme/1, span_method/1, client_address/3, is_utf8/1]).
 -export([redact_query/2, lowercase/1, header_attributes/3]).
 
 -define(KNOWN_METHODS, [
@@ -45,18 +45,24 @@ scheme(_) -> ~"_OTHER".
 span_method(~"_OTHER") -> ~"HTTP";
 span_method(Method) -> Method.
 
--spec client_address(cowboy_req:req(), binary()) -> binary().
-client_address(Req, Peer) ->
-    case cowboy_req:header(~"x-forwarded-for", Req) of
-        undefined ->
-            case cowboy_req:header(~"forwarded", Req) of
-                undefined -> Peer;
-                Forwarded -> valid_or(forwarded_for(Forwarded), Peer)
-            end;
-        XFF ->
-            [First | _] = binary:split(XFF, ~","),
-            valid_or(trim(First), Peer)
+%% The first of Headers that the request carries decides; when its address is
+%% not a valid IP the peer address is used, not a later header.
+-spec client_address(cowboy_req:req(), binary(), [binary()]) -> binary().
+client_address(_Req, Peer, []) ->
+    Peer;
+client_address(Req, Peer, [Header | Headers]) ->
+    case cowboy_req:header(Header, Req) of
+        undefined -> client_address(Req, Peer, Headers);
+        Value -> valid_or(header_address(Header, Value), Peer)
     end.
+
+header_address(~"x-forwarded-for", Value) ->
+    [First | _] = binary:split(Value, ~","),
+    trim(First);
+header_address(~"forwarded", Value) ->
+    forwarded_for(Value);
+header_address(~"x-real-ip", Value) ->
+    strip_port(trim(Value)).
 
 -spec is_utf8(binary()) -> boolean().
 is_utf8(Bin) ->

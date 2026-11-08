@@ -17,7 +17,9 @@ Options, read from the `opentelemetry_nova` application environment:
 
 * `trust_forwarded_for` (default `false`): take `client.address` from the
   first `X-Forwarded-For` entry or the `Forwarded` header when it is a valid
-  IP address. Otherwise it is the peer address.
+  IP address. Otherwise it is the peer address. A list of header names out of
+  `~"forwarded"`, `~"x-forwarded-for"` and `~"x-real-ip"` picks the headers
+  and their priority.
 * `metric_server_hosts` (default unset): a list of hosts recorded as the
   `server.address` metric attribute, together with the listener port as
   `server.port`. Other hosts are recorded as `_OTHER`. When unset, neither
@@ -486,10 +488,17 @@ server_attributes(Req, Hosts) ->
     {_IP, Port} = cowboy_req:sock(Req),
     #{'server.address' => Address, 'server.port' => Port}.
 
+-define(FORWARDED_HEADERS, [~"forwarded", ~"x-forwarded-for", ~"x-real-ip"]).
+
 client_address(Req, PeerBin) ->
-    case application:get_env(opentelemetry_nova, trust_forwarded_for, false) of
-        true -> otel_nova_http:client_address(Req, PeerBin);
-        false -> PeerBin
+    case opt(trust_forwarded_for, false) of
+        true ->
+            otel_nova_http:client_address(Req, PeerBin, [~"x-forwarded-for", ~"forwarded"]);
+        Headers when is_list(Headers) ->
+            Trusted = [H || H <- Headers, lists:member(H, ?FORWARDED_HEADERS)],
+            otel_nova_http:client_address(Req, PeerBin, Trusted);
+        _ ->
+            PeerBin
     end.
 
 peer_to_binary(Addr) ->

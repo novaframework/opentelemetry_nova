@@ -39,6 +39,7 @@ all() ->
         stream_handler_client_address_peer_fallback,
         stream_handler_ignores_forwarded_for_by_default,
         stream_handler_rejects_invalid_forwarded_for,
+        stream_handler_trusts_listed_forwarding_headers,
         stream_handler_normalises_unknown_method,
         stream_handler_tags_stream_failure,
         stream_handler_sets_redacted_url_query,
@@ -269,6 +270,34 @@ stream_handler_rejects_invalid_forwarded_for(_Config) ->
             )
         )
     ).
+
+stream_handler_trusts_listed_forwarding_headers(_Config) ->
+    All = #{
+        ~"x-forwarded-for" => ~"10.0.0.1, 10.0.0.9",
+        ~"forwarded" => ~"for=10.0.0.2",
+        ~"x-real-ip" => ~"10.0.0.3"
+    },
+    Client = fun(Headers) ->
+        maps:get('client.address', span_attributes(stream_opts(), make_req(~"GET", ~"/", Headers)))
+    end,
+    [
+        begin
+            ok = application:set_env(opentelemetry_nova, trust_forwarded_for, Setting),
+            ?assertEqual(Expected, Client(Headers), {Setting, Headers})
+        end
+     || {Setting, Headers, Expected} <- [
+            {true, All, ~"10.0.0.1"},
+            {[~"x-real-ip", ~"forwarded"], All, ~"10.0.0.3"},
+            {[~"forwarded", ~"x-forwarded-for"], All, ~"10.0.0.2"},
+            {[~"x-real-ip", ~"forwarded"], maps:remove(~"x-real-ip", All), ~"10.0.0.2"},
+            {[~"x-real-ip"], #{~"x-real-ip" => ~"[2001:db8::2]:443"}, ~"2001:db8::2"},
+            {[~"x-real-ip"], #{~"x-real-ip" => ~"2001:db8::3"}, ~"2001:db8::3"},
+            {[~"x-real-ip", ~"forwarded"], All#{~"x-real-ip" => ~"bogus"}, ~"127.0.0.1"},
+            {[~"x-client-ip", x_real_ip], All, ~"127.0.0.1"},
+            {[], All, ~"127.0.0.1"},
+            {not_a_setting, All, ~"127.0.0.1"}
+        ]
+    ].
 
 stream_handler_normalises_unknown_method(_Config) ->
     Req = make_req(~"PROPFIND", ~"/users"),
