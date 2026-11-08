@@ -23,7 +23,8 @@
     controller_crash_with_tagged_tuple_sets_error_type/1,
     thrown_status_is_not_tagged/1,
     plugin_crash_sets_error_type/1,
-    security_crash_keeps_status_error_type/1
+    security_crash_keeps_status_error_type/1,
+    response_headers_are_captured/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -62,7 +63,8 @@ all() ->
         controller_crash_with_tagged_tuple_sets_error_type,
         thrown_status_is_not_tagged,
         plugin_crash_sets_error_type,
-        security_crash_keeps_status_error_type
+        security_crash_keeps_status_error_type,
+        response_headers_are_captured
     ].
 
 init_per_suite(Config) ->
@@ -128,6 +130,8 @@ end_per_testcase(_TestCase, _Config) ->
     _ = logger:remove_handler(?MODULE),
     _ = application:unset_env(opentelemetry_nova, metric_server_hosts),
     _ = application:unset_env(opentelemetry_nova, trust_forwarded_for),
+    _ = application:unset_env(opentelemetry_nova, response_headers),
+    _ = application:unset_env(opentelemetry_nova, request_headers),
     _ = application:stop(otel_nova_test_app),
     _ = application:unload(otel_nova_test_app),
     otel_ctx:clear(),
@@ -377,6 +381,20 @@ security_crash_keeps_status_error_type(_Config) ->
     {500, _} = request(?NOVA_PORT, "/nova/security_crash", []),
     [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
     ?assertEqual(~"500", maps:get('error.type', otel_nova_test_util:span_attrs(Server))).
+
+response_headers_are_captured(_Config) ->
+    ok = application:set_env(opentelemetry_nova, request_headers, [~"cookie", ~"x-request-id"]),
+    ok = application:set_env(opentelemetry_nova, response_headers, [
+        ~"content-length", ~"server", ~"transfer-encoding"
+    ]),
+    {200, _} = get("/child", [{"cookie", ?COOKIE}, {"x-request-id", "r-1"}]),
+    [Server] = [S || S = #span{kind = server} <- receive_spans(2)],
+    Attrs = otel_nova_test_util:span_attrs(Server),
+    ?assertEqual([~"REDACTED"], maps:get(~"http.request.header.cookie", Attrs)),
+    ?assertEqual([~"r-1"], maps:get(~"http.request.header.x-request-id", Attrs)),
+    ?assertEqual([~"2"], maps:get(~"http.response.header.content-length", Attrs)),
+    ?assertEqual([~"Cowboy"], maps:get(~"http.response.header.server", Attrs)),
+    ?assertNot(maps:is_key(~"http.response.header.transfer-encoding", Attrs)).
 
 %%--------------------------------------------------------------------
 %% Helpers

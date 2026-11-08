@@ -147,6 +147,9 @@ Set these in the `opentelemetry_nova` application environment:
 | `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. |
 | `url_query` | `true` | Set `url.query` on the span when the request has a query string. `false` leaves it out. |
 | `url_query_redact_keys` | `[]` | Query keys whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
+| `request_headers` | `[]` | Lowercase request header names recorded as `http.request.header.<name>` span attributes. |
+| `response_headers` | `[]` | Lowercase response header names recorded as `http.response.header.<name>` span attributes. |
+| `sensitive_headers` | `[~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"]` | Captured headers whose value is recorded as `[~"REDACTED"]`. Replaces the default list when set. |
 
 Enable `trust_forwarded_for` only behind a proxy that replaces these headers
 with its own value. Many proxies append to `X-Forwarded-For` instead (nginx
@@ -161,6 +164,14 @@ case-insensitively): `AWSAccessKeyId`, `Signature`, `sig`,
 `X-Amz-Security-Token`, `access_token`, `id_token`, `refresh_token`, `token`,
 `api_key`, `apikey`, `key`, `password`, `secret`, `code`, `state`. A query
 string that is not valid UTF-8 is left out.
+
+Captured headers are lists of binaries, as the semantic conventions specify.
+Cowboy joins a repeated request header into one value, so a request header has
+one element; each `set-cookie` cookie of a response is its own element.
+Response headers are read from the response Cowboy is asked to send, which
+includes `date`, `server` and, for a full body, `content-length`, but not the
+headers the protocol layer adds afterwards (`connection`,
+`transfer-encoding`). Values that are not valid UTF-8 are left out.
 
 With `trust_incoming_context` at its default, a client that sends a sampled
 `traceparent` decides the sampling of its own request, including requests
@@ -289,6 +300,8 @@ Server spans are created for every HTTP request with the following attributes:
 | `network.peer.port` | Peer port |
 | `network.protocol.version` | HTTP version (`1.0`, `1.1`, `2`, `3`) |
 | `user_agent.original` | User-Agent header |
+| `http.request.header.<name>` | Request headers listed in `request_headers` |
+| `http.response.header.<name>` | Response headers listed in `response_headers` |
 | `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors |
 | `nova.app` | Nova application name |
 | `nova.controller` | Controller module |

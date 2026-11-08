@@ -43,6 +43,8 @@ all() ->
         stream_handler_tags_stream_failure,
         stream_handler_sets_redacted_url_query,
         stream_handler_url_query_options,
+        stream_handler_captures_request_headers,
+        stream_handler_captures_response_headers,
         stream_handler_ignores_failure_after_response,
         plugin_enriches_span,
         plugin_sets_http_route,
@@ -355,6 +357,60 @@ stream_handler_url_query_options(_Config) ->
     Attrs = span_attributes(stream_opts(), Req),
     ?assertNot(maps:is_key('url.query', Attrs)),
     ?assertEqual(~"/search", maps:get('url.path', Attrs)).
+
+stream_handler_captures_request_headers(_Config) ->
+    ok = application:set_env(opentelemetry_nova, request_headers, [
+        ~"x-request-id", ~"Authorization", ~"accept", ~"x-binary"
+    ]),
+    Req = make_req(~"GET", ~"/", #{
+        ~"x-request-id" => ~"abc",
+        ~"authorization" => ~"Bearer secret",
+        ~"x-binary" => <<16#FF>>,
+        ~"x-not-captured" => ~"1"
+    }),
+    Attrs = span_attributes(stream_opts(), Req),
+    ?assertEqual(
+        #{
+            ~"http.request.header.x-request-id" => [~"abc"],
+            ~"http.request.header.authorization" => [~"REDACTED"]
+        },
+        maps:filter(fun(K, _) -> is_binary(K) end, Attrs)
+    ),
+    ok = application:set_env(opentelemetry_nova, sensitive_headers, []),
+    ?assertEqual(
+        [~"Bearer secret"],
+        maps:get(~"http.request.header.authorization", span_attributes(stream_opts(), Req))
+    ).
+
+stream_handler_captures_response_headers(_Config) ->
+    ok = application:set_env(opentelemetry_nova, response_headers, [
+        ~"content-type", ~"set-cookie", ~"x-trace"
+    ]),
+    Headers = #{
+        ~"content-type" => ~"text/plain",
+        ~"set-cookie" => [~"a=1", [~"b=", ~"2"]],
+        ~"x-trace" => [~"t", ~"1"],
+        ~"x-other" => ~"z"
+    },
+    ?assertEqual(
+        #{
+            ~"http.response.header.content-type" => [~"text/plain"],
+            ~"http.response.header.set-cookie" => [~"REDACTED"],
+            ~"http.response.header.x-trace" => [~"t1"]
+        },
+        response_header_attrs({response, 200, Headers, ~"ok"})
+    ),
+    ok = application:set_env(opentelemetry_nova, sensitive_headers, [~"content-type"]),
+    ?assertEqual(
+        #{
+            ~"http.response.header.content-type" => [~"REDACTED"],
+            ~"http.response.header.set-cookie" => [~"a=1", ~"b=2"],
+            ~"http.response.header.x-trace" => [~"t1"]
+        },
+        response_header_attrs({headers, 200, Headers})
+    ),
+    ok = application:unset_env(opentelemetry_nova, response_headers),
+    ?assertEqual(#{}, response_header_attrs({response, 200, Headers, ~"ok"})).
 
 stream_handler_ignores_failure_after_response(_Config) ->
     Req = make_req(~"GET", ~"/late-failure"),
@@ -757,6 +813,15 @@ span_attributes(Opts, Req) ->
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+response_header_attrs(Command) ->
+    Path = iolist_to_binary(["/headers/", integer_to_list(erlang:unique_integer([positive]))]),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"GET", Path), stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, Command, State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
+    Attrs = otel_nova_test_util:span_attrs(receive_span(Path)),
+    maps:filter(fun(K, _) -> is_binary(K) end, Attrs).
 
 plugin_route(Req, Env) ->
     {State0, DownReq} = start_stream(1, Req),

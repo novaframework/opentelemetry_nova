@@ -28,6 +28,12 @@ Options, read from the `opentelemetry_nova` application environment:
 * `url_query` (default `true`): set `url.query`, with the values of secret
   keys replaced by `REDACTED`.
 * `url_query_redact_keys` (default `[]`): more query keys to redact.
+* `request_headers` and `response_headers` (default `[]`): lowercase header
+  names recorded as `http.request.header.<name>` and
+  `http.response.header.<name>` span attributes.
+* `sensitive_headers` (default `authorization`, `proxy-authorization`,
+  `cookie`, `set-cookie`, `x-api-key`): captured headers whose value is
+  recorded as `REDACTED`.
 
 The method is normalised to one of the nine standard methods or `_OTHER`, on
 both spans and metrics. Spans keep the sent value as
@@ -52,8 +58,15 @@ both spans and metrics. Spans keep the sent value as
     req_body_length :: non_neg_integer(),
     resp_body_length :: non_neg_integer(),
     metric_attrs :: map(),
-    error_type :: binary() | undefined
+    error_type :: binary() | undefined,
+    response_headers :: [binary()],
+    sensitive_headers :: [binary()],
+    response_header_attrs :: map()
 }).
+
+-define(SENSITIVE_HEADERS, [
+    ~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"
+]).
 
 -define(CTX_KEY, otel_nova_ctx).
 
@@ -64,7 +77,10 @@ init(StreamID, Req, Opts) ->
         req_start = erlang:monotonic_time(),
         req_body_length = 0,
         resp_body_length = 0,
-        metric_attrs = #{}
+        metric_attrs = #{},
+        response_headers = [],
+        sensitive_headers = ?SENSITIVE_HEADERS,
+        response_header_attrs = #{}
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
     {Commands, Next} = cowboy_stream:init(StreamID, Req1, Opts),
@@ -84,7 +100,8 @@ info(_StreamID, {otel_nova_route, Route}, State) when is_binary(Route) ->
 info(_StreamID, {otel_nova_error_type, Tag}, State) when is_binary(Tag) ->
     {[], State#state{error_type = Tag}};
 info(StreamID, Info, State0) ->
-    State = safely(info, fun() -> observe(Info, State0) end, State0),
+    State1 = safely(info, fun() -> observe(Info, State0) end, State0),
+    State = safely(info, fun() -> capture_response_headers(Info, State1) end, State1),
     {Commands, Next} = cowboy_stream:info(StreamID, Info, State#state.next),
     {Commands, State#state{next = Next}}.
 
@@ -111,7 +128,13 @@ start_request(Req, State) ->
     Attrs0 = safely(init, fun() -> request_attributes(Req, Method) end, #{
         'http.request.method' => Method
     }),
-    Attrs = maps:merge(Attrs0, safely(init, fun() -> query_attributes(Req) end, #{})),
+    Attrs1 = maps:merge(Attrs0, safely(init, fun() -> query_attributes(Req) end, #{})),
+    {Sensitive, ResponseHeaders} = safely(
+        init, fun() -> header_options() end, {?SENSITIVE_HEADERS, []}
+    ),
+    Attrs = maps:merge(
+        Attrs1, safely(init, fun() -> request_header_attributes(Req, Sensitive) end, #{})
+    ),
     MetricAttrs = safely(init, fun() -> metric_attributes(Req, Method) end, #{
         'http.request.method' => Method
     }),
@@ -126,7 +149,12 @@ start_request(Req, State) ->
     safely(
         init, fun() -> ?updown_counter_add('http.server.active_requests', 1, MetricAttrs) end, ok
     ),
-    {Req#{?CTX_KEY => Ctx}, State#state{span_ctx = SpanCtx, metric_attrs = MetricAttrs}}.
+    {Req#{?CTX_KEY => Ctx}, State#state{
+        span_ctx = SpanCtx,
+        metric_attrs = MetricAttrs,
+        response_headers = ResponseHeaders,
+        sensitive_headers = Sensitive
+    }}.
 
 span_name(~"_OTHER") -> ~"HTTP";
 span_name(Method) -> <<"HTTP ", Method/binary>>.
@@ -185,7 +213,15 @@ stream_failure_tag(_Reason) ->
 
 finish_request(#state{span_ctx = undefined}) ->
     ok;
-finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode, error_type = Tag}) ->
+finish_request(
+    State = #state{
+        span_ctx = SpanCtx,
+        status_code = StatusCode,
+        error_type = Tag,
+        response_header_attrs = HeaderAttrs
+    }
+) ->
+    _ = otel_span:set_attributes(SpanCtx, HeaderAttrs),
     set_status_attributes(SpanCtx, StatusCode, Tag),
     _ = otel_span:end_span(SpanCtx),
     safely(terminate, fun() -> end_active_request(State) end, ok),
@@ -323,6 +359,35 @@ query_attributes(Req) ->
         _ ->
             #{}
     end.
+
+header_options() ->
+    Sensitive = [
+        otel_nova_http:lowercase(Name)
+     || Name <- opt(sensitive_headers, ?SENSITIVE_HEADERS)
+    ],
+    ResponseHeaders = [otel_nova_http:lowercase(Name) || Name <- opt(response_headers, [])],
+    {Sensitive, ResponseHeaders}.
+
+request_header_attributes(Req, Sensitive) ->
+    Names = [otel_nova_http:lowercase(Name) || Name <- opt(request_headers, [])],
+    Headers = [
+        {Name, Value}
+     || Name <- Names, Value <- [cowboy_req:header(Name, Req)], Value =/= undefined
+    ],
+    otel_nova_http:header_attributes(~"http.request.header.", Headers, Sensitive).
+
+capture_response_headers(_Info, State = #state{response_headers = []}) ->
+    State;
+capture_response_headers({response, _Code, Headers, _Body}, State) ->
+    State#state{response_header_attrs = response_header_attributes(Headers, State)};
+capture_response_headers({headers, _Code, Headers}, State) ->
+    State#state{response_header_attrs = response_header_attributes(Headers, State)};
+capture_response_headers(_Info, State) ->
+    State.
+
+response_header_attributes(Headers, #state{response_headers = Names, sensitive_headers = Sensitive}) ->
+    Captured = [{Name, Value} || Name := Value <- Headers, lists:member(Name, Names)],
+    otel_nova_http:header_attributes(~"http.response.header.", Captured, Sensitive).
 
 opt(Key, Default) ->
     application:get_env(opentelemetry_nova, Key, Default).
