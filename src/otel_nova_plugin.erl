@@ -18,6 +18,12 @@ be determined the attribute is left out rather than set to
 the raw path, so the number of metric series stays bounded. Instrumentation
 failures are logged without request data and never fail the request.
 
+The span is named `{METHOD} {route}`. With the `span_name_formatter` option
+set to `{Mod, Fun}`, it is named `Mod:Fun(Method, Route)` instead, where
+`Method` is the normalised method (`~"_OTHER"` for a non-standard one) and
+`Route` the template or `undefined`. A crash or a result that is not a binary
+keeps the default name.
+
 Also register it as a `post_request` plugin. When Nova reports a controller
 or plugin crash in `crash_info`, it sets `error.type` on the server span to
 the crash reason (the reason atom, the tag of a tagged tuple, or the class),
@@ -64,15 +70,15 @@ instrument(Req, Env) ->
     attach_context(Req),
     record_crash(Req),
     SpanCtx = otel_tracer:current_span_ctx(),
-    case route(Req) of
+    Route = route(Req),
+    case Route of
         undefined ->
             ok;
-        Route ->
-            Method = otel_nova_http:span_method(otel_nova_http:method(cowboy_req:method(Req))),
+        _ ->
             annotate(SpanCtx, #{'http.route' => Route}),
-            report(otel_nova_route, Route, Req),
-            rename(SpanCtx, <<Method/binary, " ", Route/binary>>)
+            report(otel_nova_route, Route, Req)
     end,
+    rename(SpanCtx, span_name(otel_nova_http:method(cowboy_req:method(Req)), Route)),
     case extract_callback_info(Env) of
         {App, Controller, Action} ->
             annotate(SpanCtx, #{
@@ -92,6 +98,8 @@ annotate(SpanCtx, Attrs) ->
     ok.
 
 rename(undefined, _Name) ->
+    ok;
+rename(_SpanCtx, undefined) ->
     ok;
 rename(SpanCtx, Name) ->
     _ = otel_span:update_name(SpanCtx, Name),
@@ -130,6 +138,32 @@ set_error(undefined, _Tag) ->
 set_error(SpanCtx, Tag) ->
     _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Tag),
     ok.
+
+span_name(Method, Route) ->
+    case application:get_env(opentelemetry_nova, span_name_formatter, undefined) of
+        {Mod, Fun} when is_atom(Mod), is_atom(Fun) ->
+            formatted_span_name(Mod, Fun, Method, Route);
+        _ ->
+            default_span_name(Method, Route)
+    end.
+
+formatted_span_name(Mod, Fun, Method, Route) ->
+    try Mod:Fun(Method, Route) of
+        Name when is_binary(Name) ->
+            Name;
+        _ ->
+            otel_nova_stream_h:log_failure(span_name_formatter, error, invalid_span_name, []),
+            default_span_name(Method, Route)
+    catch
+        Class:Reason:Stacktrace ->
+            otel_nova_stream_h:log_failure(span_name_formatter, Class, Reason, Stacktrace),
+            default_span_name(Method, Route)
+    end.
+
+default_span_name(_Method, undefined) ->
+    undefined;
+default_span_name(Method, Route) ->
+    <<(otel_nova_http:span_method(Method))/binary, " ", Route/binary>>.
 
 attach_context(#{otel_nova_ctx := Ctx}) ->
     _ = otel_ctx:attach(Ctx),

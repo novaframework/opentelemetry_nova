@@ -57,6 +57,8 @@ all() ->
         plugin_ignores_invalid_route_from_nova,
         plugin_sets_logger_metadata_with_trace_ids,
         plugin_tags_crash_from_crash_info,
+        plugin_uses_span_name_formatter,
+        plugin_falls_back_when_span_name_formatter_fails,
         plugin_ignores_crash_info_without_reason,
         plugin_skips_logger_metadata_without_valid_span,
         stream_handler_restores_context_on_terminate,
@@ -626,6 +628,26 @@ plugin_tags_crash_from_crash_info(_Config) ->
         {~"badarg", ~"badarg", undefined}, crash_tags(#{class => error, reason => badarg}, 404)
     ).
 
+plugin_uses_span_name_formatter(_Config) ->
+    ok = application:set_env(
+        opentelemetry_nova, span_name_formatter, {otel_nova_test_controller, span_name}
+    ),
+    ?assertEqual(~"custom GET /users", plugin_span_name(make_req(~"GET", ~"/users"))),
+    ?assertEqual(~"custom _OTHER /users", plugin_span_name(make_req(~"PROPFIND", ~"/users"))),
+    Unrouted = (make_req(~"GET", ~"/assets/app.css"))#{extra_state => #{pathinfo => [~"x.css"]}},
+    ?assertEqual(~"GET unrouted", plugin_span_name(Unrouted)).
+
+plugin_falls_back_when_span_name_formatter_fails(_Config) ->
+    [
+        begin
+            ok = application:set_env(
+                opentelemetry_nova, span_name_formatter, {otel_nova_test_controller, Fun}
+            ),
+            ?assertEqual(~"GET /users", plugin_span_name(make_req(~"GET", ~"/users")), Fun)
+        end
+     || Fun <- [crashing_span_name, invalid_span_name, not_exported]
+    ].
+
 plugin_ignores_crash_info_without_reason(_Config) ->
     [
         ?assertEqual({~"500", undefined, ~"500"}, crash_tags(CrashInfo, 500), CrashInfo)
@@ -859,6 +881,15 @@ span_attributes(Opts, Req) ->
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+plugin_span_name(Req) ->
+    {State0, DownReq} = start_stream(1, Req),
+    State = run_plugin(DownReq, #{}, State0),
+    {_Cmds, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"OK"}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
+    #span{name = Name} = receive_span(maps:get(path, Req)),
+    Name.
 
 response_header_attrs(Command) ->
     Path = iolist_to_binary(["/headers/", integer_to_list(erlang:unique_integer([positive]))]),

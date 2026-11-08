@@ -149,6 +149,7 @@ Set these in the `opentelemetry_nova` application environment:
 | `url_query_redact_keys` | `[]` | Query keys whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
 | `request_headers` | `[]` | Lowercase request header names recorded as `http.request.header.<name>` span attributes. |
 | `response_headers` | `[]` | Lowercase response header names recorded as `http.response.header.<name>` span attributes. |
+| `span_name_formatter` | unset | `{Mod, Fun}`: the plugin names the server span `Mod:Fun(Method, Route)`. `Method` is the normalised method (`~"_OTHER"` for a non-standard one), `Route` the route template or `undefined`. A crash or a non-binary result keeps the default name and is logged as `otel_nova_instrumentation_failed`. |
 | `opt_in_attributes` | `[]` | Opt-in span attributes to add: any of `'client.port'`, `'network.local.address'`, `'network.local.port'`, `'network.transport'`, `'http.request.body.size'`, `'http.response.body.size'`. |
 | `sensitive_headers` | `[~"authorization", ~"proxy-authorization", ~"cookie", ~"set-cookie", ~"x-api-key"]` | Captured headers whose value is recorded as `[~"REDACTED"]`. Replaces the default list when set. |
 
@@ -315,7 +316,8 @@ Server spans are created for every HTTP request with the following attributes:
 | `nova.action` | Action function |
 
 Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
-For an `_OTHER` method the method part is `HTTP`.
+For an `_OTHER` method the method part is `HTTP`. Set `span_name_formatter` to
+name spans differently. Keep the names low-cardinality.
 
 `http.route` is the route template, never the raw path. Bound segments become
 `:name`, and the tail matched by a catch-all route, including Nova static
