@@ -2,6 +2,7 @@
 -moduledoc false.
 
 -export([options/0, span/3, metric/3, response_headers/2, body_sizes/3, final_metric/5]).
+-export([add_extra_metric/2]).
 
 -export_type([options/0]).
 
@@ -36,6 +37,9 @@
     'server.address',
     'server.port'
 ]).
+
+-define(MAX_EXTRA_METRIC_ATTRIBUTES, 10).
+-define(MAX_EXTRA_METRIC_VALUE_SIZE, 64).
 
 -type options() :: #{
     trust_forwarded_for := [binary()],
@@ -219,7 +223,63 @@ server(Req, Hosts) ->
     map().
 final_metric(MetricAttrs, Route, StatusCode, ErrorType, Extra) ->
     Builtin = maps:merge(MetricAttrs, maps:merge(route(Route), status(StatusCode, ErrorType))),
-    maps:merge(maps:without(?BUILTIN_METRIC_ATTRIBUTES, Extra), Builtin).
+    maps:merge(Extra, Builtin).
+
+%% Added attributes become label names and values in every HTTP histogram,
+%% so they are held to what a label can safely carry. Keys are stored as
+%% binaries, so `tenant` and `~"tenant"` are one attribute, and a key whose
+%% Prometheus label (dots become underscores) is a built-in label, `le` or
+%% the label of another added key is dropped. At most ten keys are kept per
+%% request.
+-spec add_extra_metric(#{dynamic() => dynamic()}, #{binary() => binary() | atom() | integer()}) ->
+    #{binary() => binary() | atom() | integer()}.
+add_extra_metric(Attrs, Extra) ->
+    New = lists:sort([
+        {Key, Value}
+     || RawKey := Value <- Attrs,
+        Key <- [extra_key(RawKey)],
+        Key =/= undefined,
+        is_extra_value(Value)
+    ]),
+    add_extra(New, Extra).
+
+add_extra([], Extra) ->
+    Extra;
+add_extra([{Key, Value} | Rest], Extra) when is_map_key(Key, Extra) ->
+    add_extra(Rest, Extra#{Key => Value});
+add_extra([{Key, Value} | Rest], Extra) ->
+    Label = label_name(Key),
+    case
+        map_size(Extra) < ?MAX_EXTRA_METRIC_ATTRIBUTES andalso
+            not lists:any(fun(Other) -> label_name(Other) =:= Label end, maps:keys(Extra))
+    of
+        true -> add_extra(Rest, Extra#{Key => Value});
+        false -> add_extra(Rest, Extra)
+    end.
+
+extra_key(Key) when is_atom(Key) ->
+    extra_key(atom_to_binary(Key));
+extra_key(Key) when is_binary(Key) ->
+    case
+        re:run(Key, ~"^[a-zA-Z_][a-zA-Z0-9_.]*$", [{capture, none}]) =:= match andalso
+            not lists:member(label_name(Key), reserved_labels())
+    of
+        true -> Key;
+        false -> undefined
+    end;
+extra_key(_Key) ->
+    undefined.
+
+reserved_labels() ->
+    [~"le" | [label_name(atom_to_binary(Key)) || Key <- ?BUILTIN_METRIC_ATTRIBUTES]].
+
+label_name(Key) ->
+    binary:replace(Key, ~".", ~"_", [global]).
+
+is_extra_value(Value) when is_binary(Value) ->
+    byte_size(Value) =< ?MAX_EXTRA_METRIC_VALUE_SIZE andalso otel_nova_http:is_utf8(Value);
+is_extra_value(Value) ->
+    is_atom(Value) orelse is_integer(Value).
 
 route(undefined) -> #{};
 route(Route) -> #{'http.route' => Route}.

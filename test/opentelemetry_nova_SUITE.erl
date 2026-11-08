@@ -937,9 +937,27 @@ metrics_include_added_attributes(_Config) ->
     {State0, DownReq} = start_stream(1, Req),
     State1 = run_plugin(DownReq, #{}, State0),
     ok = opentelemetry_nova:add_metric_attributes(DownReq, #{
-        tenant => ~"a", plan => ~"free", 'http.route' => ~"/spoofed", bad => {nested, #{}}
+        tenant => ~"a",
+        ~"plan" => ~"free",
+        flag => true,
+        ~"a.b" => 1,
+        ~"a_b" => 2,
+        'http.route' => ~"/spoofed",
+        ~"http.route" => ~"/spoofed",
+        ~"http_route" => ~"/spoofed",
+        ~"error_type" => ~"spoofed",
+        le => ~"1",
+        ~"1bad" => ~"x",
+        ~"has space" => ~"x",
+        nested => {nested, #{}},
+        long => binary:copy(~"x", 65),
+        latin1 => <<16#FF>>,
+        ratio => 1.5
     }),
     ok = opentelemetry_nova:add_metric_attributes(DownReq, #{plan => ~"pro"}),
+    ok = opentelemetry_nova:add_metric_attributes(
+        DownReq, #{list_to_atom("k" ++ integer_to_list(N)) => N || N <- lists:seq(10, 19)}
+    ),
     ok = opentelemetry_nova:add_metric_attributes(maps:remove(otel_nova_ctx, DownReq), #{x => 1}),
     State2 = forward_casts(1, State1),
     {_Cmds1, State3} = otel_nova_stream_h:data(1, fin, ~"body", State2),
@@ -947,7 +965,18 @@ metrics_include_added_attributes(_Config) ->
     otel_nova_stream_h:terminate(1, normal, State4),
     drain_spans(),
     otel_meter_server:force_flush(),
-    Expected = #{tenant => ~"a", plan => ~"pro", 'http.route' => ~"/labelled"},
+    Expected = #{
+        ~"tenant" => ~"a",
+        ~"plan" => ~"pro",
+        ~"flag" => true,
+        ~"a.b" => 1,
+        ~"k10" => 10,
+        ~"k11" => 11,
+        ~"k12" => 12,
+        ~"k13" => 13,
+        ~"k14" => 14,
+        ~"k15" => 15
+    },
     [
         ?assertReceiveMetric(Name, fun(#metric{data = #histogram{datapoints = Datapoints}}) ->
             [Attrs] = [
@@ -955,9 +984,9 @@ metrics_include_added_attributes(_Config) ->
              || #histogram_datapoint{attributes = A = #{'http.response.status_code' := 201}} <-
                     Datapoints
             ],
-            ?assertEqual(Expected, maps:with([tenant, plan, 'http.route'], Attrs)),
-            ?assertNot(maps:is_key(bad, Attrs)),
-            ?assertNot(maps:is_key(x, Attrs))
+            ?assertEqual(Expected, binary_keys(Attrs)),
+            ?assertEqual(~"/labelled", maps:get('http.route', Attrs)),
+            ?assertNot(maps:is_key('error.type', Attrs))
         end)
      || Name <- [
             'http.server.request.duration',

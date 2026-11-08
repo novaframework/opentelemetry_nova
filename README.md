@@ -436,10 +436,18 @@ show(Req = #{bindings := #{~"tenant" := Tenant}}) ->
     {json, #{}}.
 ```
 
-Later calls are merged in, a later value winning. The built-in attributes
-(`http.request.method`, `url.scheme`, `http.route`,
-`http.response.status_code`, `error.type`, `server.address`, `server.port`)
-cannot be overridden, invalid attribute values are dropped, and
+Later calls are merged in, a later value winning. Entries that break these
+rules are dropped:
+
+- Keys are atoms or binaries matching `^[a-zA-Z_][a-zA-Z0-9_.]*$`. They are
+  recorded as binaries, so `tenant_tier` and `~"tenant_tier"` are one key.
+- A key cannot be `le` or have the Prometheus label form (dots become
+  underscores) of a built-in attribute (`http.request.method`, `url.scheme`,
+  `http.route`, `http.response.status_code`, `error.type`, `server.address`,
+  `server.port`) or of another added key.
+- Values are atoms, booleans, integers or UTF-8 binaries of at most 64 bytes.
+- At most 10 keys per request.
+
 `http.server.active_requests` does not get them. The call does nothing when
 the request does not pass through `otel_nova_stream_h`.
 

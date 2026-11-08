@@ -56,10 +56,15 @@ Adds attributes to the `http.server.request.duration`,
 measurements of the current request. Call it from a controller or plugin with
 the Req of the request; later calls are merged in, a later value winning.
 
-The built-in attributes (`http.request.method`, `url.scheme`, `http.route`,
-`http.response.status_code`, `error.type`, `server.address`, `server.port`)
-cannot be overridden. Every distinct value becomes a separate metric series,
-so only use attributes with a small, bounded set of values.
+Keys are atoms or binaries matching `^[a-zA-Z_][a-zA-Z0-9_.]*$` and are
+recorded as binaries. Values are atoms, booleans, integers or UTF-8 binaries
+of at most 64 bytes. A key whose Prometheus label form (dots become
+underscores) is `le`, a built-in label (`http_route`, `error_type`, ...) or
+the label of another added key is dropped, as is any invalid entry. At most
+10 keys are kept per request.
+
+Every distinct value becomes a separate metric series, so only use
+attributes with a small, bounded set of values.
 
 Does nothing when the request is not instrumented by `otel_nova_stream_h`.
 """.

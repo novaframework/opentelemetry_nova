@@ -203,13 +203,7 @@ capture_response_headers(_Info, State) ->
     State.
 
 add_metric_attributes(Attrs, State = #state{extra_metric_attrs = Extra}) ->
-    State#state{extra_metric_attrs = maps:merge(Extra, valid_attributes(Attrs))}.
-
-%% The attributes arrive in a message from the request process.
--spec valid_attributes(#{dynamic() => dynamic()}) ->
-    #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
-valid_attributes(Attrs) ->
-    #{Key => Value || Key := Value <- Attrs, otel_attributes:is_valid_attribute(Key, Value)}.
+    State#state{extra_metric_attrs = otel_nova_attributes:add_extra_metric(Attrs, Extra)}.
 
 %% A stream that ends without a response, such as a client that closes the
 %% connection or a request timeout, is tagged with the reason Cowboy gives.
