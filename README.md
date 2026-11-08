@@ -10,12 +10,16 @@ Add the library, the OpenTelemetry SDK and an exporter to your dependencies in `
 
 ```erlang
 {deps, [
-    {opentelemetry_nova, "~> 0.4"},
+    {opentelemetry_nova, "~> 0.6"},
     {opentelemetry, "~> 1.7"},
     {opentelemetry_experimental, "~> 0.6"},
     {opentelemetry_exporter, "~> 1.11"}
 ]}.
 ```
+
+`opentelemetry_nova` depends on Nova (`~> 0.18`) from Hex, so you do not need
+to list `nova` for its sake; your application's own `nova` requirement must
+fall in that range.
 
 List `opentelemetry_exporter`, `opentelemetry_experimental` and `opentelemetry`
 before your own application in the release (or in `applications` of your

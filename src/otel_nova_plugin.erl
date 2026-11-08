@@ -31,13 +31,14 @@ the tag of a tagged tuple, or the class), sets the span status to error and
 reports the tag to the stream handler, which uses it as the `error.type`
 metric attribute of a 5xx response.
 """.
-%% Implements nova_plugin behaviour callbacks.
-%% The -behaviour directive is omitted because nova is only a test dependency.
+-behaviour(nova_plugin).
 
 -export([pre_request/4, post_request/4, plugin_info/0]).
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 
+-spec pre_request(cowboy_req:req(), cowboy_middleware:env(), map(), State) ->
+    {ok, cowboy_req:req(), State}.
 pre_request(Req, Env, _Opts, State) ->
     try
         instrument(Req, Env)
@@ -47,6 +48,8 @@ pre_request(Req, Env, _Opts, State) ->
     end,
     {ok, Req, State}.
 
+-spec post_request(cowboy_req:req(), cowboy_middleware:env(), map(), State) ->
+    {ok, cowboy_req:req(), State}.
 post_request(Req, _Env, _Opts, State) ->
     try
         record_crash(Req)

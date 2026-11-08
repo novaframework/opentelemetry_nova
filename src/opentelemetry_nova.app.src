@@ -3,7 +3,7 @@
     {vsn, git},
     {registered, []},
     {applications, [
-        kernel, stdlib, opentelemetry, opentelemetry_api, opentelemetry_api_experimental
+        kernel, stdlib, opentelemetry, opentelemetry_api, opentelemetry_api_experimental, nova
     ]},
     {env, []},
     {modules, []},
