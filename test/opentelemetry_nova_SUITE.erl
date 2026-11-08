@@ -261,7 +261,24 @@ stream_handler_rejects_invalid_forwarded_for(_Config) ->
      || Headers <- [
             #{~"x-forwarded-for" => <<16#FF>>},
             #{~"x-forwarded-for" => ~"not-an-ip, 10.0.0.1"},
-            #{~"forwarded" => ~"for=\"_hidden\""}
+            #{~"forwarded" => ~"for=\"_hidden\""},
+            #{~"forwarded" => ~"xfor=10.0.0.5"},
+            #{~"forwarded" => ~"by=\"for=10.0.0.6\""}
+        ]
+    ],
+    [
+        ?assertEqual(
+            Expected,
+            maps:get(
+                'client.address',
+                span_attributes(stream_opts(), make_req(~"GET", ~"/", #{~"forwarded" => Value}))
+            ),
+            Value
+        )
+     || {Value, Expected} <- [
+            {~"by=\"for=10.0.0.6\";for=10.0.0.7", ~"10.0.0.7"},
+            {~"proto=https; For=10.0.0.8, for=10.0.0.9", ~"10.0.0.8"},
+            {~"for=10.0.0.10;proto=http", ~"10.0.0.10"}
         ]
     ],
     ?assertEqual(

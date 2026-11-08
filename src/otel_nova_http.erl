@@ -143,7 +143,9 @@ ascii_lower(C) when C >= $A, C =< $Z -> C + 32;
 ascii_lower(C) -> C.
 
 forwarded_for(Forwarded) ->
-    case re:run(Forwarded, ~"for=\"?([^;,\"]+)\"?", [{capture, [1], binary}, caseless]) of
+    case
+        re:run(Forwarded, ~"(?:^|[;,\\s])for=\"?([^;,\"]+)\"?", [{capture, [1], binary}, caseless])
+    of
         {match, [Node]} -> strip_port(trim(Node));
         nomatch -> undefined
     end.

@@ -159,7 +159,7 @@ Set these in the `opentelemetry_nova` application environment:
 |--------|---------|--------|
 | `trust_forwarded_for` | `false` | `true`: take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. A list of header names out of `~"forwarded"`, `~"x-forwarded-for"` and `~"x-real-ip"` (lowercased) uses those headers in that priority order. Otherwise `client.address` is the peer address. |
 | `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
-| `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. `{Mod, Fun}` decides per request: `Mod:Fun(Req)` returns `true` to trust the context. Any other result, or a crash (logged), means `false`. |
+| `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. `{Mod, Fun}` decides per request: `Mod:Fun(Req)` returns `true` to trust the context. Any other result, or a crash (logged), means `false`. The callback runs in the connection process and must do no I/O. |
 | `url_query` | `false` | Set `url.query` on the span when the request has a query string, with secret-looking values redacted (see below). |
 | `url_query_redact_keys` | `[]` | More key fragments whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
 | `request_headers` | `[]` | Request header names recorded as `http.request.header.<name>` span attributes. Names are lowercased. |
@@ -193,6 +193,13 @@ token. A query string that is not valid UTF-8 is left out. Redaction is by key
 name only: a secret under an innocent key, such as `?q=<api key>`, is
 recorded.
 
+`url.query` and captured header values are recorded at full length. Set the
+SDK's `attribute_value_length_limit` to cap them:
+
+```erlang
+{opentelemetry, [{attribute_value_length_limit, 1024}]}
+```
+
 Captured headers are lists of binaries, as the semantic conventions specify.
 Cowboy joins a repeated request header into one value, so a request header has
 one element.
@@ -206,8 +213,11 @@ With `trust_incoming_context` at its default, a client that sends a sampled
 excluded by `otel_nova_sampler` under `parent_based`, and its `baggage` is
 propagated to every service the request reaches. On an edge that faces
 untrusted clients, set it to `false`, or use a callback when one listener
-serves both internal and public traffic. The callback runs in the connection
-process before routing, on the Cowboy Req:
+serves both internal and public traffic. The callback runs in the Cowboy
+connection process for every request, before routing, on the Cowboy Req. It
+must be fast and do no I/O (no database, no calls to other processes that may
+block): while it runs, the connection handles nothing else, including the
+other streams of an HTTP/2 connection.
 
 ```erlang
 -module(my_trust).

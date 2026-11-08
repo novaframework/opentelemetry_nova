@@ -28,7 +28,7 @@ Options, read from the `opentelemetry_nova` application environment:
   baggage the client sends. When `false` the server span starts a new trace
   and links to the remote parent. `{Mod, Fun}` decides per request:
   `Mod:Fun(Req)` returns `true` to trust it; any other result or a crash means
-  `false`.
+  `false`. It runs in the connection process and must do no I/O.
 * `url_query` (default `false`): set `url.query`, with the values of
   secret-looking keys replaced by `REDACTED`.
 * `url_query_redact_keys` (default `[]`): more key fragments to redact.
