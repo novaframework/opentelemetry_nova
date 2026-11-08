@@ -125,9 +125,7 @@ info(
 ) when
     is_map(Attrs)
 ->
-    Valid =
-        #{Key => Value || Key := Value <- Attrs, otel_attributes:is_valid_attribute(Key, Value)},
-    {[], State#state{extra_metric_attrs = maps:merge(Extra, Valid)}};
+    {[], State#state{extra_metric_attrs = maps:merge(Extra, valid_attributes(Attrs))}};
 info(StreamID, Info, State0) ->
     State1 = safely(info, fun() -> observe(Info, State0) end, State0),
     State = safely(info, fun() -> capture_response_headers(Info, State1) end, State1),
@@ -159,12 +157,12 @@ start_request(Req, State) ->
     }),
     Attrs1 = maps:merge(Attrs0, safely(init, fun() -> query_attributes(Req) end, #{})),
     {Sensitive, ResponseHeaders} = safely(
-        init, fun() -> header_options() end, {?SENSITIVE_HEADERS, []}
+        init, fun header_options/0, {?SENSITIVE_HEADERS, []}
     ),
     Attrs2 = maps:merge(
         Attrs1, safely(init, fun() -> request_header_attributes(Req, Sensitive) end, #{})
     ),
-    OptIn = safely(init, fun() -> opt_in() end, []),
+    OptIn = safely(init, fun opt_in/0, []),
     Attrs = maps:merge(
         Attrs2, safely(init, fun() -> opt_in_request_attributes(Req, Attrs0, OptIn) end, #{})
     ),
@@ -333,6 +331,12 @@ status_attrs(Code, _Tag) ->
 
 error_type(Code, undefined) -> integer_to_binary(Code);
 error_type(_Code, Tag) -> Tag.
+
+%% The attributes arrive in a message from the request process.
+-spec valid_attributes(#{dynamic() => dynamic()}) ->
+    #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
+valid_attributes(Attrs) ->
+    #{Key => Value || Key := Value <- Attrs, otel_attributes:is_valid_attribute(Key, Value)}.
 
 body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).

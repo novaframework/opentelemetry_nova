@@ -1,6 +1,6 @@
 -module(otel_nova_test_util).
 
--export([stream_req/2, span_attrs/1]).
+-export([stream_req/2, span_attrs/1, receive_span/1]).
 
 -include_lib("opentelemetry/include/otel_span.hrl").
 
@@ -32,3 +32,16 @@ span_attrs(#span{attributes = '_'}) ->
     #{};
 span_attrs(#span{attributes = Attributes}) ->
     otel_attributes:map(Attributes).
+
+%% Spans of earlier requests can still arrive, so wait for the one with Path.
+-spec receive_span(binary()) -> #span{}.
+receive_span(Path) ->
+    receive
+        {span, Span} ->
+            case span_attrs(Span) of
+                #{'url.path' := Path} -> Span;
+                _ -> receive_span(Path)
+            end
+    after 5000 ->
+        error({timeout_waiting_for_span, Path})
+    end.
