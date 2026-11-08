@@ -76,7 +76,7 @@ is_utf8(Bin) ->
 redact_query(Qs, ExtraKeys) ->
     Keys = ?REDACTED_QUERY_KEYS ++ [lowercase(Key) || Key <- ExtraKeys],
     Pairs = binary:split(Qs, ~"&", [global]),
-    binary:join([redact_pair(Pair, Keys) || Pair <- Pairs], ~"&").
+    iolist_to_binary(lists:join(~"&", [redact_pair(Pair, Keys) || Pair <- Pairs])).
 
 -spec redact_pair(binary(), [binary()]) -> binary().
 redact_pair(Pair, Keys) ->
