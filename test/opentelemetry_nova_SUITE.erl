@@ -10,6 +10,7 @@
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
+-include_lib("opentelemetry_experimental/src/otel_metric_exemplar.hrl").
 
 -define(assertReceiveMetric(Name, Fun),
     (fun() ->
@@ -39,14 +40,28 @@ all() ->
         stream_handler_client_address_peer_fallback,
         stream_handler_ignores_forwarded_for_by_default,
         stream_handler_rejects_invalid_forwarded_for,
+        stream_handler_trusts_listed_forwarding_headers,
         stream_handler_normalises_unknown_method,
+        stream_handler_tags_stream_failure,
+        stream_handler_sets_redacted_url_query,
+        stream_handler_url_query_options,
+        stream_handler_captures_request_headers,
+        stream_handler_captures_response_headers,
+        stream_handler_sets_opt_in_attributes,
+        stream_handler_ignores_failure_after_response,
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
         plugin_folds_catch_all_tail_into_route,
         plugin_canonicalises_route,
         plugin_omits_undeterminable_route,
+        plugin_prefers_route_from_nova,
+        plugin_ignores_invalid_route_from_nova,
         plugin_sets_logger_metadata_with_trace_ids,
+        plugin_tags_crash_from_crash_info,
+        plugin_uses_span_name_formatter,
+        plugin_falls_back_when_span_name_formatter_fails,
+        plugin_ignores_crash_info_without_reason,
         plugin_skips_logger_metadata_without_valid_span,
         stream_handler_restores_context_on_terminate,
         trace_context_propagation,
@@ -55,11 +70,14 @@ all() ->
         metrics_server_attributes_need_allowlist,
         metrics_error_type_in_metrics,
         metrics_active_requests,
-        metrics_body_sizes
+        metrics_body_sizes,
+        metrics_include_added_attributes,
+        metrics_carry_exemplars_of_the_server_span
     ].
 
 init_per_suite(Config) ->
     application:ensure_all_started(opentelemetry),
+    ok = application:set_env(opentelemetry_experimental, exemplars_enabled, true),
     ok = application:set_env(opentelemetry_experimental, readers, [
         #{
             module => otel_metric_reader,
@@ -82,8 +100,21 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(_TestCase, _Config) ->
     persistent_term:erase(test_metric_pid),
-    _ = application:unset_env(opentelemetry_nova, trust_forwarded_for),
-    _ = application:unset_env(opentelemetry_nova, metric_server_hosts),
+    [
+        application:unset_env(opentelemetry_nova, Key)
+     || Key <- [
+            trust_forwarded_for,
+            metric_server_hosts,
+            url_query,
+            url_query_redact_keys,
+            request_headers,
+            response_headers,
+            sensitive_headers,
+            opt_in_attributes,
+            span_name_formatter,
+            trust_incoming_context
+        ]
+    ],
     otel_ctx:clear(),
     ok.
 
@@ -230,7 +261,24 @@ stream_handler_rejects_invalid_forwarded_for(_Config) ->
      || Headers <- [
             #{~"x-forwarded-for" => <<16#FF>>},
             #{~"x-forwarded-for" => ~"not-an-ip, 10.0.0.1"},
-            #{~"forwarded" => ~"for=\"_hidden\""}
+            #{~"forwarded" => ~"for=\"_hidden\""},
+            #{~"forwarded" => ~"xfor=10.0.0.5"},
+            #{~"forwarded" => ~"by=\"for=10.0.0.6\""}
+        ]
+    ],
+    [
+        ?assertEqual(
+            Expected,
+            maps:get(
+                'client.address',
+                span_attributes(stream_opts(), make_req(~"GET", ~"/", #{~"forwarded" => Value}))
+            ),
+            Value
+        )
+     || {Value, Expected} <- [
+            {~"by=\"for=10.0.0.6\";for=10.0.0.7", ~"10.0.0.7"},
+            {~"proto=https; For=10.0.0.8, for=10.0.0.9", ~"10.0.0.8"},
+            {~"for=10.0.0.10;proto=http", ~"10.0.0.10"}
         ]
     ],
     ?assertEqual(
@@ -243,6 +291,35 @@ stream_handler_rejects_invalid_forwarded_for(_Config) ->
             )
         )
     ).
+
+stream_handler_trusts_listed_forwarding_headers(_Config) ->
+    All = #{
+        ~"x-forwarded-for" => ~"10.0.0.1, 10.0.0.9",
+        ~"forwarded" => ~"for=10.0.0.2",
+        ~"x-real-ip" => ~"10.0.0.3"
+    },
+    Client = fun(Headers) ->
+        maps:get('client.address', span_attributes(stream_opts(), make_req(~"GET", ~"/", Headers)))
+    end,
+    [
+        begin
+            ok = application:set_env(opentelemetry_nova, trust_forwarded_for, Setting),
+            ?assertEqual(Expected, Client(Headers), {Setting, Headers})
+        end
+     || {Setting, Headers, Expected} <- [
+            {true, All, ~"10.0.0.1"},
+            {[~"x-real-ip", ~"forwarded"], All, ~"10.0.0.3"},
+            {[~"X-Real-IP"], All, ~"10.0.0.3"},
+            {[~"forwarded", ~"x-forwarded-for"], All, ~"10.0.0.2"},
+            {[~"x-real-ip", ~"forwarded"], maps:remove(~"x-real-ip", All), ~"10.0.0.2"},
+            {[~"x-real-ip"], #{~"x-real-ip" => ~"[2001:db8::2]:443"}, ~"2001:db8::2"},
+            {[~"x-real-ip"], #{~"x-real-ip" => ~"2001:db8::3"}, ~"2001:db8::3"},
+            {[~"x-real-ip", ~"forwarded"], All#{~"x-real-ip" => ~"bogus"}, ~"127.0.0.1"},
+            {[~"x-client-ip", x_real_ip], All, ~"127.0.0.1"},
+            {[], All, ~"127.0.0.1"},
+            {not_a_setting, All, ~"127.0.0.1"}
+        ]
+    ].
 
 stream_handler_normalises_unknown_method(_Config) ->
     Req = make_req(~"PROPFIND", ~"/users"),
@@ -272,6 +349,229 @@ stream_handler_normalises_unknown_method(_Config) ->
     end),
     GetReq = make_req(~"GET", ~"/users"),
     ?assertNot(maps:is_key('http.request.method_original', span_attributes(stream_opts(), GetReq))).
+
+stream_handler_tags_stream_failure(_Config) ->
+    [
+        begin
+            Path = atom_to_binary(element(1, Reason)),
+            Req = make_req(~"GET", <<"/", Path/binary>>),
+            {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+            otel_nova_stream_h:terminate(1, Reason, State),
+            otel_tracer_provider:force_flush(),
+            Span = otel_nova_test_util:receive_span(<<"/", Path/binary>>),
+            Attrs = otel_nova_test_util:span_attrs(Span),
+            ?assertEqual(Path, maps:get('error.type', Attrs)),
+            ?assertNot(maps:is_key('http.response.status_code', Attrs)),
+            ?assertMatch(#status{code = ?OTEL_STATUS_ERROR, message = Path}, Span#span.status)
+        end
+     || Reason <- [
+            {socket_error, closed, 'The socket has been closed.'},
+            {internal_error, timeout, 'Request timed out.'},
+            {stream_error, protocol_error, 'Bad frame.'},
+            {connection_error, protocol_error, 'Bad frame.'},
+            {stop, {exit, shutdown}, 'Stopped.'}
+        ]
+    ],
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        [DP] = [
+            DP
+         || DP = #histogram_datapoint{attributes = #{'error.type' := ~"socket_error"}} <-
+                Datapoints
+        ],
+        ?assertNot(maps:is_key('http.response.status_code', DP#histogram_datapoint.attributes)),
+        ?assertEqual(1, DP#histogram_datapoint.count)
+    end).
+
+stream_handler_sets_redacted_url_query(_Config) ->
+    Req = (make_req(~"GET", ~"/search"))#{
+        qs =>
+            ~"q=a+b&my_token=abc&Signature=x%2F&X-AMZ-Credential=y&b=%41&flag&p%61ssword=s&Code=1&&userEmail=e&page=2"
+    },
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))),
+    ok = application:set_env(opentelemetry_nova, url_query, true),
+    ?assertEqual(
+        ~"q=a+b&my_token=REDACTED&Signature=REDACTED&X-AMZ-Credential=REDACTED&b=%41&REDACTED&p%61ssword=REDACTED&Code=REDACTED&&userEmail=REDACTED&page=2",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ),
+    [
+        ?assertEqual(
+            <<Key/binary, "=REDACTED">>,
+            maps:get(
+                'url.query',
+                span_attributes(stream_opts(), (make_req(~"GET", ~"/"))#{qs => <<Key/binary, "=v">>})
+            ),
+            Key
+        )
+     || Key <- [
+            ~"AWSAccessKeyId",
+            ~"X-Goog-Signature",
+            ~"X-Amz-Security-Token",
+            ~"pwd",
+            ~"Authorization",
+            ~"sessionid",
+            ~"sid",
+            ~"otp",
+            ~"nonce",
+            ~"jwt",
+            ~"ticket",
+            ~"SAMLResponse",
+            ~"state",
+            ~"hash"
+        ]
+    ],
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), make_req(~"GET", ~"/")))),
+    Invalid = (make_req(~"GET", ~"/"))#{qs => <<"q=", 16#FF>>},
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Invalid))).
+
+stream_handler_url_query_options(_Config) ->
+    Req = (make_req(~"GET", ~"/search"))#{qs => ~"tenant_id=1&Tenant=a&token=t&q=x"},
+    ok = application:set_env(opentelemetry_nova, url_query, true),
+    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, [~"TENANT", ~""]),
+    ?assertEqual(
+        ~"tenant_id=REDACTED&Tenant=REDACTED&token=REDACTED&q=x",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, not_a_list),
+    ?assertEqual(
+        ~"tenant_id=1&Tenant=a&token=REDACTED&q=x",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, url_query, false),
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))).
+
+stream_handler_captures_request_headers(_Config) ->
+    ok = application:set_env(opentelemetry_nova, request_headers, [
+        ~"x-request-id", ~"Authorization", ~"accept", ~"x-binary", ~"X-CSRF-Token", ~"x-tenant"
+    ]),
+    Req = make_req(~"GET", ~"/", #{
+        ~"x-request-id" => ~"abc",
+        ~"authorization" => ~"Bearer secret",
+        ~"x-binary" => <<16#FF>>,
+        ~"x-csrf-token" => ~"csrf",
+        ~"x-tenant" => ~"acme",
+        ~"x-not-captured" => ~"1"
+    }),
+    ?assertEqual(
+        #{
+            ~"http.request.header.x-request-id" => [~"abc"],
+            ~"http.request.header.authorization" => [~"REDACTED"],
+            ~"http.request.header.x-csrf-token" => [~"REDACTED"],
+            ~"http.request.header.x-tenant" => [~"acme"]
+        },
+        otel_nova_test_util:binary_keys(span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, sensitive_headers, [~"X-Tenant"]),
+    ?assertEqual(
+        #{
+            ~"http.request.header.x-request-id" => [~"abc"],
+            ~"http.request.header.authorization" => [~"REDACTED"],
+            ~"http.request.header.x-csrf-token" => [~"REDACTED"],
+            ~"http.request.header.x-tenant" => [~"REDACTED"]
+        },
+        otel_nova_test_util:binary_keys(span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, sensitive_headers, []),
+    ?assertEqual(
+        [~"REDACTED"],
+        maps:get(~"http.request.header.authorization", span_attributes(stream_opts(), Req))
+    ).
+
+stream_handler_captures_response_headers(_Config) ->
+    ok = application:set_env(opentelemetry_nova, response_headers, [
+        ~"Content-Type", ~"set-cookie", ~"x-trace"
+    ]),
+    Headers = #{
+        ~"content-type" => ~"text/plain",
+        ~"set-cookie" => [~"a=1", [~"b=", ~"2"]],
+        ~"x-trace" => [~"t", ~"1"],
+        ~"x-other" => ~"z"
+    },
+    ?assertEqual(
+        #{
+            ~"http.response.header.content-type" => [~"text/plain"],
+            ~"http.response.header.set-cookie" => [~"REDACTED"],
+            ~"http.response.header.x-trace" => [~"t1"]
+        },
+        response_header_attrs(response, Headers)
+    ),
+    ok = application:set_env(opentelemetry_nova, sensitive_headers, [~"content-type"]),
+    ?assertEqual(
+        #{
+            ~"http.response.header.content-type" => [~"REDACTED"],
+            ~"http.response.header.set-cookie" => [~"REDACTED"],
+            ~"http.response.header.x-trace" => [~"t1"]
+        },
+        response_header_attrs(headers, Headers)
+    ),
+    ok = application:unset_env(opentelemetry_nova, response_headers),
+    ?assertEqual(#{}, response_header_attrs(response, Headers)).
+
+stream_handler_sets_opt_in_attributes(_Config) ->
+    OptIn = [
+        'client.port',
+        'network.local.address',
+        'network.local.port',
+        'network.transport',
+        'http.request.body.size',
+        'http.response.body.size'
+    ],
+    Default = run_with_bodies(~"/opt-in-default", ~"hello"),
+    [?assertNot(maps:is_key(Name, Default), Name) || Name <- OptIn],
+    ok = application:set_env(opentelemetry_nova, opt_in_attributes, [unknown | OptIn]),
+    Attrs = run_with_bodies(~"/opt-in", ~"hello"),
+    ?assertEqual(
+        #{
+            'client.port' => 12345,
+            'network.local.address' => ~"127.0.0.2",
+            'network.local.port' => 8080,
+            'network.transport' => ~"tcp",
+            'http.request.body.size' => 5,
+            'http.response.body.size' => 3
+        },
+        maps:with(OptIn, Attrs)
+    ),
+    ok = application:set_env(opentelemetry_nova, trust_forwarded_for, true),
+    Forwarded = make_req(~"GET", ~"/", #{~"x-forwarded-for" => ~"10.0.0.1"}),
+    ForwardedAttrs = span_attributes(stream_opts(), Forwarded),
+    ?assertEqual(~"10.0.0.1", maps:get('client.address', ForwardedAttrs)),
+    ?assertNot(maps:is_key('client.port', ForwardedAttrs)),
+    ?assertEqual(
+        ~"udp",
+        maps:get(
+            'network.transport',
+            span_attributes(stream_opts(), make_req_with_version(~"GET", ~"/", 'HTTP/3'))
+        )
+    ).
+
+run_with_bodies(Path, ReqBody) ->
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"POST", Path), stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:data(1, fin, ReqBody, State0),
+    {_Cmds2, State2} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"bye"}, State1),
+    otel_nova_stream_h:terminate(1, normal, State2),
+    otel_tracer_provider:force_flush(),
+    otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(Path)).
+
+stream_handler_ignores_failure_after_response(_Config) ->
+    Req = make_req(~"GET", ~"/late-failure"),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"OK"}, State0),
+    otel_nova_stream_h:terminate(1, {socket_error, closed, 'The socket has been closed.'}, State1),
+    otel_tracer_provider:force_flush(),
+    Span = otel_nova_test_util:receive_span(~"/late-failure"),
+    ?assertNot(maps:is_key('error.type', otel_nova_test_util:span_attrs(Span))),
+    ?assertNotMatch(#status{code = ?OTEL_STATUS_ERROR}, Span#span.status),
+    Normal = make_req(~"GET", ~"/no-response"),
+    {_Cmds2, State2} = otel_nova_stream_h:init(1, Normal, stream_opts()),
+    otel_nova_stream_h:terminate(1, normal, State2),
+    otel_tracer_provider:force_flush(),
+    ?assertNot(
+        maps:is_key(
+            'error.type',
+            otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/no-response"))
+        )
+    ).
 
 stream_handler_ends_span_on_auth_rejection(_Config) ->
     %% Simulates what happens when nova_security_handler returns {stop, Req}:
@@ -392,6 +692,76 @@ plugin_omits_undeterminable_route(_Config) ->
     Req0 = make_req(~"GET", ~"/assets/app.css"),
     Req = Req0#{extra_state => #{pathinfo => [~"other.css"]}},
     ?assertEqual(undefined, plugin_route(Req, #{})).
+
+plugin_prefers_route_from_nova(_Config) ->
+    Req0 = make_req(~"GET", ~"/users/users"),
+    Req = Req0#{bindings => #{~"id" => ~"users"}, nova_route => ~"/users/:id"},
+    ?assertEqual(~"/users/:id", plugin_route(Req, #{})),
+    Assets0 = make_req(~"GET", ~"/assets/a/b.css"),
+    Assets = Assets0#{
+        extra_state => #{pathinfo => [~"other.css"]}, nova_route => ~"/assets/[...]"
+    },
+    ?assertEqual(~"/assets/[...]", plugin_route(Assets, #{})).
+
+plugin_ignores_invalid_route_from_nova(_Config) ->
+    Req0 = make_req(~"GET", ~"/api/health"),
+    [
+        ?assertEqual(~"/api/health", plugin_route(Req0#{nova_route => Route}, #{}), Route)
+     || Route <- [<<"/bad", 16#FF>>, '/api/:id', 42]
+    ].
+
+plugin_tags_crash_from_crash_info(_Config) ->
+    [
+        ?assertEqual({Tag, Tag, Tag}, crash_tags(CrashInfo, 500), CrashInfo)
+     || {CrashInfo, Tag} <- [
+            {#{class => error, reason => badarg}, ~"badarg"},
+            {#{class => error, reason => {badmatch, 1}, stacktrace => []}, ~"badmatch"},
+            {#{class => exit, reason => "text"}, ~"exit"},
+            {#{class => "odd", reason => {}}, ~"_OTHER"}
+        ]
+    ],
+    ?assertEqual(
+        {~"badarg", ~"badarg", ~"badarg"},
+        crash_tags(#{class => error, reason => badarg}, undefined, 500)
+    ),
+    ?assertEqual(
+        {undefined, undefined, undefined}, crash_tags(#{class => error, reason => badarg}, 404)
+    ),
+    ?assertEqual(
+        {undefined, undefined, undefined},
+        crash_tags(#{class => error, reason => badarg, status_code => 404}, undefined, 404)
+    ).
+
+plugin_uses_span_name_formatter(_Config) ->
+    ok = application:set_env(
+        opentelemetry_nova, span_name_formatter, {otel_nova_test_controller, span_name}
+    ),
+    ?assertEqual(~"custom GET /users", plugin_span_name(make_req(~"GET", ~"/users"), #{})),
+    ?assertEqual(~"custom _OTHER /users", plugin_span_name(make_req(~"PROPFIND", ~"/users"), #{})),
+    Unrouted = (make_req(~"GET", ~"/assets/app.css"))#{extra_state => #{pathinfo => [~"x.css"]}},
+    ?assertEqual(~"GET unrouted", plugin_span_name(Unrouted, #{})).
+
+plugin_falls_back_when_span_name_formatter_fails(_Config) ->
+    [
+        begin
+            ok = application:set_env(
+                opentelemetry_nova, span_name_formatter, {otel_nova_test_controller, Fun}
+            ),
+            ?assertEqual(~"GET /users", plugin_span_name(make_req(~"GET", ~"/users"), #{}), Fun)
+        end
+     || Fun <- [crashing_span_name, invalid_span_name, not_exported]
+    ].
+
+plugin_ignores_crash_info_without_reason(_Config) ->
+    [
+        ?assertEqual({~"500", undefined, ~"500"}, crash_tags(CrashInfo, 500), CrashInfo)
+     || CrashInfo <- [
+            unavailable,
+            #{status_code => 500, title => ~"Error in controller"},
+            #{reason => badarg},
+            #{class => error}
+        ]
+    ].
 
 plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     logger:unset_process_metadata(),
@@ -592,6 +962,99 @@ metrics_body_sizes(_Config) ->
         ?assert(DP#histogram_datapoint.count >= 1)
     end).
 
+metrics_include_added_attributes(_Config) ->
+    Req = make_req(~"POST", ~"/labelled"),
+    {State0, DownReq} = start_stream(1, Req),
+    State1 = run_plugin(DownReq, #{}, State0),
+    ok = opentelemetry_nova:add_metric_attributes(DownReq, #{
+        tenant => ~"a",
+        ~"plan" => ~"free",
+        flag => true,
+        ~"a.b" => 1,
+        ~"a_b" => 2,
+        'http.route' => ~"/spoofed",
+        ~"http.route" => ~"/spoofed",
+        ~"http_route" => ~"/spoofed",
+        ~"error_type" => ~"spoofed",
+        le => ~"1",
+        ~"1bad" => ~"x",
+        ~"has space" => ~"x",
+        nested => {nested, #{}},
+        long => binary:copy(~"x", 65),
+        latin1 => <<16#FF>>,
+        ratio => 1.5
+    }),
+    ok = opentelemetry_nova:add_metric_attributes(DownReq, #{plan => ~"pro"}),
+    ok = opentelemetry_nova:add_metric_attributes(
+        DownReq, #{list_to_atom("k" ++ integer_to_list(N)) => N || N <- lists:seq(10, 19)}
+    ),
+    ok = opentelemetry_nova:add_metric_attributes(maps:remove(otel_nova_ctx, DownReq), #{x => 1}),
+    State2 = forward_casts(1, State1),
+    {_Cmds1, State3} = otel_nova_stream_h:data(1, fin, ~"body", State2),
+    {_Cmds2, State4} = otel_nova_stream_h:info(1, {response, 201, #{}, ~"ok"}, State3),
+    otel_nova_stream_h:terminate(1, normal, State4),
+    drain_spans(),
+    otel_meter_server:force_flush(),
+    Expected = #{
+        ~"tenant" => ~"a",
+        ~"plan" => ~"pro",
+        ~"flag" => true,
+        ~"a.b" => 1,
+        ~"k10" => 10,
+        ~"k11" => 11,
+        ~"k12" => 12,
+        ~"k13" => 13,
+        ~"k14" => 14,
+        ~"k15" => 15
+    },
+    [
+        ?assertReceiveMetric(Name, fun(#metric{data = #histogram{datapoints = Datapoints}}) ->
+            [Attrs] = [
+                A
+             || #histogram_datapoint{attributes = A = #{'http.response.status_code' := 201}} <-
+                    Datapoints
+            ],
+            ?assertEqual(Expected, otel_nova_test_util:binary_keys(Attrs)),
+            ?assertEqual(~"/labelled", maps:get('http.route', Attrs)),
+            ?assertNot(maps:is_key('error.type', Attrs))
+        end)
+     || Name <- [
+            'http.server.request.duration',
+            'http.server.request.body.size',
+            'http.server.response.body.size'
+        ]
+    ].
+
+metrics_carry_exemplars_of_the_server_span(_Config) ->
+    Path = ~"/exemplar",
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"PUT", Path), stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:data(1, fin, ~"body", State0),
+    {_Cmds2, State2} = otel_nova_stream_h:info(1, {response, 202, #{}, ~"ok"}, State1),
+    otel_nova_stream_h:terminate(1, normal, State2),
+    otel_tracer_provider:force_flush(),
+    #span{trace_id = TraceId, span_id = SpanId} = otel_nova_test_util:receive_span(Path),
+    otel_meter_server:force_flush(),
+    [
+        ?assertReceiveMetric(Name, fun(#metric{data = #histogram{datapoints = Datapoints}}) ->
+            [Exemplars] = [
+                E
+             || #histogram_datapoint{
+                    attributes = #{'http.request.method' := ~"PUT"}, exemplars = E
+                } <- Datapoints
+            ],
+            ?assertMatch(
+                [#exemplar{trace_id = TraceId, span_id = SpanId} | _],
+                [X || X = #exemplar{trace_id = T} <- Exemplars, T =:= TraceId],
+                Name
+            )
+        end)
+     || Name <- [
+            'http.server.request.duration',
+            'http.server.request.body.size',
+            'http.server.response.body.size'
+        ]
+    ].
+
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
@@ -621,11 +1084,35 @@ span_attributes(Opts, Req) ->
         ct:fail(timeout_waiting_for_span)
     end.
 
+plugin_span_name(Req, Env) ->
+    {State0, DownReq} = start_stream(1, Req),
+    State = run_plugin(DownReq, Env, State0),
+    {_Cmds, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"OK"}, State),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
+    #span{name = Name} = otel_nova_test_util:receive_span(maps:get(path, Req)),
+    Name.
+
+response_header_attrs(Kind, Headers) ->
+    Command =
+        case Kind of
+            response -> {response, 200, Headers, ~"ok"};
+            headers -> {headers, 200, Headers}
+        end,
+    Path = iolist_to_binary(["/headers/", integer_to_list(erlang:unique_integer([positive]))]),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"GET", Path), stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, Command, State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
+    Attrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(Path)),
+    maps:filter(fun(K, _) -> is_binary(K) end, Attrs).
+
 plugin_route(Req, Env) ->
     {State0, DownReq} = start_stream(1, Req),
     State = run_plugin(DownReq, Env, State0),
     {_Cmds, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"OK"}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
+    otel_tracer_provider:force_flush(),
     receive
         {span, Span} ->
             {Route, Expected} =
@@ -639,9 +1126,62 @@ plugin_route(Req, Env) ->
         ct:fail(timeout_waiting_for_span)
     end.
 
+%% Runs a request whose post_request sees CrashInfo and returns the span
+%% error.type, the span status message and the duration metric error.type.
+crash_tags(CrashInfo, Status) ->
+    crash_tags(CrashInfo, Status, Status).
+
+crash_tags(CrashInfo, RespStatus, Status) ->
+    Path = iolist_to_binary(["/crash/", integer_to_list(erlang:unique_integer([positive]))]),
+    {State0, DownReq} = start_stream(1, make_req(~"GET", Path)),
+    State1 = run_plugin(DownReq, #{}, State0),
+    {ok, _, _} = otel_nova_plugin:post_request(
+        maps:filter(
+            fun(_, V) -> V =/= undefined end,
+            DownReq#{crash_info => CrashInfo, resp_status_code => RespStatus}
+        ),
+        #{},
+        #{},
+        undefined
+    ),
+    State2 = forward_casts(1, State1),
+    {_Cmds, State3} = otel_nova_stream_h:info(1, {response, Status, #{}, ~"Error"}, State2),
+    otel_nova_stream_h:terminate(1, normal, State3),
+    otel_tracer_provider:force_flush(),
+    Span = otel_nova_test_util:receive_span(Path),
+    SpanType = maps:get('error.type', otel_nova_test_util:span_attrs(Span), undefined),
+    Message =
+        case Span#span.status of
+            #status{code = ?OTEL_STATUS_ERROR, message = M} when M =/= ~"Server error" -> M;
+            _ -> undefined
+        end,
+    otel_meter_server:force_flush(),
+    MetricType = metric_error_type(Path, 'http.server.request.duration'),
+    {SpanType, Message, MetricType}.
+
+metric_error_type(Path, Name) ->
+    receive
+        {otel_metric, #metric{name = Name, data = Data}} ->
+            #histogram{datapoints = Datapoints} = Data,
+            case
+                [
+                    maps:get('error.type', A, undefined)
+                 || #histogram_datapoint{attributes = A = #{'http.route' := P}} <- Datapoints,
+                    P =:= Path
+                ]
+            of
+                [Type] -> Type;
+                [] -> metric_error_type(Path, Name)
+            end;
+        {otel_metric, _} ->
+            metric_error_type(Path, Name)
+    after 5000 ->
+        ct:fail({timeout_waiting_for_metric, Path})
+    end.
+
 forward_casts(StreamID, State0) ->
     receive
-        {{_Pid, StreamID}, Msg = {otel_nova_route, _}} ->
+        {{_Pid, StreamID}, Msg = {_Tag, _Value}} ->
             {[], State} = otel_nova_stream_h:info(StreamID, Msg, State0),
             forward_casts(StreamID, State)
     after 0 ->
@@ -667,6 +1207,7 @@ make_req(Method, Path, ExtraHeaders) ->
         version => 'HTTP/1.1',
         headers => Headers,
         peer => {{127, 0, 0, 1}, 12345},
+        sock => {{127, 0, 0, 2}, 8080},
         cert => undefined,
         pid => self(),
         streamid => 1

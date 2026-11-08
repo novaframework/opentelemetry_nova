@@ -17,14 +17,31 @@ Options, read from the `opentelemetry_nova` application environment:
 
 * `trust_forwarded_for` (default `false`): take `client.address` from the
   first `X-Forwarded-For` entry or the `Forwarded` header when it is a valid
-  IP address. Otherwise it is the peer address.
+  IP address. Otherwise it is the peer address. A list of header names out of
+  `~"forwarded"`, `~"x-forwarded-for"` and `~"x-real-ip"` picks the headers
+  and their priority.
 * `metric_server_hosts` (default unset): a list of hosts recorded as the
   `server.address` metric attribute, together with the listener port as
   `server.port`. Other hosts are recorded as `_OTHER`. When unset, neither
   attribute is recorded on metrics.
 * `trust_incoming_context` (default `true`): continue the trace context and
   baggage the client sends. When `false` the server span starts a new trace
-  and links to the remote parent.
+  and links to the remote parent. `{Mod, Fun}` decides per request:
+  `Mod:Fun(Req)` returns `true` to trust it; any other result or a crash means
+  `false`. It runs in the connection process and must do no I/O.
+* `url_query` (default `false`): set `url.query`, with the values of
+  secret-looking keys replaced by `REDACTED`.
+* `url_query_redact_keys` (default `[]`): more key fragments to redact.
+* `request_headers` and `response_headers` (default `[]`): header names,
+  lowercased, recorded as `http.request.header.<name>` and
+  `http.response.header.<name>` span attributes.
+* `sensitive_headers` (default `[]`): captured headers whose value is recorded
+  as `REDACTED`, in addition to `authorization`, `proxy-authorization`,
+  `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`, `x-csrf-token` and
+  `x-amz-security-token`.
+* `opt_in_attributes` (default `[]`): any of `'client.port'`,
+  `'network.local.address'`, `'network.local.port'`, `'network.transport'`,
+  `'http.request.body.size'` and `'http.response.body.size'`.
 
 The method is normalised to one of the nine standard methods or `_OTHER`, on
 both spans and metrics. Spans keep the sent value as
@@ -33,12 +50,12 @@ both spans and metrics. Spans keep the sent value as
 -behavior(cowboy_stream).
 
 -export([init/3, data/4, info/3, terminate/3, early_error/5]).
--export([log_failure/4]).
 
--include_lib("kernel/include/logger.hrl").
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry_api_experimental/include/otel_meter.hrl").
+
+-define(CTX_KEY, otel_nova_ctx).
 
 -record(state, {
     next :: undefined | {module(), term()},
@@ -48,10 +65,12 @@ both spans and metrics. Spans keep the sent value as
     req_start :: integer(),
     req_body_length :: non_neg_integer(),
     resp_body_length :: non_neg_integer(),
-    metric_attrs :: map()
+    metric_attrs :: map(),
+    error_type :: binary() | undefined,
+    opts :: map() | undefined,
+    response_header_attrs :: map(),
+    extra_metric_attrs :: map()
 }).
-
--define(CTX_KEY, otel_nova_ctx).
 
 -spec init(cowboy_stream:streamid(), cowboy_req:req(), cowboy:opts()) ->
     {cowboy_stream:commands(), #state{}}.
@@ -60,7 +79,9 @@ init(StreamID, Req, Opts) ->
         req_start = erlang:monotonic_time(),
         req_body_length = 0,
         resp_body_length = 0,
-        metric_attrs = #{}
+        metric_attrs = #{},
+        response_header_attrs = #{},
+        extra_metric_attrs = #{}
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
     {Commands, Next} = cowboy_stream:init(StreamID, Req1, Opts),
@@ -77,14 +98,19 @@ data(StreamID, IsFin, Data, State0 = #state{req_body_length = Acc}) ->
     {cowboy_stream:commands(), #state{}}.
 info(_StreamID, {otel_nova_route, Route}, State) when is_binary(Route) ->
     {[], State#state{http_route = Route}};
+info(_StreamID, {otel_nova_error_type, Tag}, State) when is_binary(Tag) ->
+    {[], State#state{error_type = Tag}};
+info(_StreamID, {otel_nova_metric_attributes, Attrs}, State) when is_map(Attrs) ->
+    {[], safely(info, fun() -> add_metric_attributes(Attrs, State) end, State)};
 info(StreamID, Info, State0) ->
-    State = safely(info, fun() -> observe(Info, State0) end, State0),
+    State1 = safely(info, fun() -> observe(Info, State0) end, State0),
+    State = safely(info, fun() -> capture_response_headers(Info, State1) end, State1),
     {Commands, Next} = cowboy_stream:info(StreamID, Info, State#state.next),
     {Commands, State#state{next = Next}}.
 
 -spec terminate(cowboy_stream:streamid(), cowboy_stream:reason(), #state{}) -> any().
 terminate(StreamID, Reason, State = #state{next = Next}) ->
-    safely(terminate, fun() -> finish_request(State) end, ok),
+    safely(terminate, fun() -> finish_request(stream_failure(Reason, State)) end, ok),
     cowboy_stream:terminate(StreamID, Reason, Next).
 
 -spec early_error(
@@ -101,14 +127,13 @@ early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
 %% Internal
 
 start_request(Req, State) ->
+    Opts = otel_nova_attributes:options(),
     Method = safely(init, fun() -> otel_nova_http:method(cowboy_req:method(Req)) end, ~"_OTHER"),
-    Attrs = safely(init, fun() -> request_attributes(Req, Method) end, #{
+    Attrs = otel_nova_attributes:span(Req, Method, Opts),
+    MetricAttrs = safely(init, fun() -> otel_nova_attributes:metric(Req, Method, Opts) end, #{
         'http.request.method' => Method
     }),
-    MetricAttrs = safely(init, fun() -> metric_attributes(Req, Method) end, #{
-        'http.request.method' => Method
-    }),
-    {ParentCtx, Links} = safely(init, fun() -> parent(Req) end, {otel_ctx:new(), []}),
+    {ParentCtx, Links} = safely(init, fun() -> parent(Req, Opts) end, {otel_ctx:new(), []}),
     SpanCtx = otel_tracer:start_span(
         ParentCtx,
         ?current_tracer,
@@ -119,7 +144,9 @@ start_request(Req, State) ->
     safely(
         init, fun() -> ?updown_counter_add('http.server.active_requests', 1, MetricAttrs) end, ok
     ),
-    {Req#{?CTX_KEY => Ctx}, State#state{span_ctx = SpanCtx, metric_attrs = MetricAttrs}}.
+    {Req#{?CTX_KEY => Ctx}, State#state{
+        span_ctx = SpanCtx, metric_attrs = MetricAttrs, opts = Opts
+    }}.
 
 span_name(~"_OTHER") -> ~"HTTP";
 span_name(Method) -> <<"HTTP ", Method/binary>>.
@@ -127,15 +154,26 @@ span_name(Method) -> <<"HTTP ", Method/binary>>.
 %% With trust_incoming_context disabled the server span is a new root, so a
 %% client cannot force sampling or inject baggage, and the remote parent is
 %% kept as a link.
-parent(Req) ->
+parent(Req, Opts) ->
     Headers = maps:to_list(cowboy_req:headers(Req)),
     Remote = otel_propagator_text_map:extract_to(otel_ctx:new(), Headers),
-    case application:get_env(opentelemetry_nova, trust_incoming_context, true) of
+    case trust_incoming_context(Req, Opts) of
         true ->
             {Remote, []};
         false ->
             {otel_ctx:new(), links(otel_tracer:current_span_ctx(Remote))}
     end.
+
+trust_incoming_context(Req, #{trust_incoming_context := {Mod, Fun}}) ->
+    try
+        Mod:Fun(Req) =:= true
+    catch
+        Class:Reason:Stacktrace ->
+            otel_nova_http:log_failure(trust_incoming_context, Class, Reason, Stacktrace),
+            false
+    end;
+trust_incoming_context(_Req, #{trust_incoming_context := Trust}) ->
+    Trust.
 
 links(undefined) ->
     [];
@@ -153,165 +191,120 @@ observe({error_response, Code, _Headers, Body}, State) when is_integer(Code) ->
 observe(_Info, State) ->
     State.
 
+capture_response_headers(_Info, State = #state{opts = undefined}) ->
+    State;
+capture_response_headers(_Info, State = #state{opts = #{response_headers := []}}) ->
+    State;
+capture_response_headers({response, _Code, Headers, _Body}, State = #state{opts = Opts}) ->
+    State#state{response_header_attrs = otel_nova_attributes:response_headers(Headers, Opts)};
+capture_response_headers({headers, _Code, Headers}, State = #state{opts = Opts}) ->
+    State#state{response_header_attrs = otel_nova_attributes:response_headers(Headers, Opts)};
+capture_response_headers(_Info, State) ->
+    State.
+
+add_metric_attributes(Attrs, State = #state{extra_metric_attrs = Extra}) ->
+    State#state{extra_metric_attrs = otel_nova_attributes:add_extra_metric(Attrs, Extra)}.
+
+%% A stream that ends without a response, such as a client that closes the
+%% connection or a request timeout, is tagged with the reason Cowboy gives.
+stream_failure(_Reason, State = #state{status_code = Code}) when is_integer(Code) ->
+    State;
+stream_failure(normal, State) ->
+    State;
+stream_failure(switch_protocol, State) ->
+    State;
+stream_failure(Reason, State = #state{span_ctx = SpanCtx}) ->
+    Tag = stream_failure_tag(Reason),
+    _ = otel_span:set_attribute(SpanCtx, 'error.type', Tag),
+    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Tag),
+    State#state{error_type = Tag}.
+
+stream_failure_tag(Reason) when is_atom(Reason) ->
+    atom_to_binary(Reason);
+stream_failure_tag(Reason) when
+    is_tuple(Reason), tuple_size(Reason) > 0, is_atom(element(1, Reason))
+->
+    atom_to_binary(element(1, Reason));
+stream_failure_tag(_Reason) ->
+    ~"_OTHER".
+
 finish_request(#state{span_ctx = undefined}) ->
     ok;
-finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode}) ->
-    set_status_attributes(SpanCtx, StatusCode),
+finish_request(
+    State = #state{
+        span_ctx = SpanCtx,
+        status_code = StatusCode,
+        error_type = Tag,
+        response_header_attrs = HeaderAttrs,
+        opts = Opts,
+        req_body_length = ReqBodyLen,
+        resp_body_length = RespBodyLen
+    }
+) ->
+    BodySizes = otel_nova_attributes:body_sizes(Opts, ReqBodyLen, RespBodyLen),
+    _ = otel_span:set_attributes(SpanCtx, maps:merge(HeaderAttrs, BodySizes)),
+    set_status_attributes(SpanCtx, StatusCode, Tag),
+    safely(terminate, fun() -> record_metrics(State) end, ok),
     _ = otel_span:end_span(SpanCtx),
-    safely(terminate, fun() -> end_active_request(State) end, ok),
-    safely(terminate, fun() -> record_metrics(State) end, ok).
+    safely(terminate, fun() -> end_active_request(State) end, ok).
 
 end_active_request(#state{metric_attrs = MetricAttrs}) ->
     ?updown_counter_add('http.server.active_requests', -1, MetricAttrs).
 
+%% The connection process has no attached context, so the server span is
+%% passed explicitly; with exemplars enabled the measurements then carry its
+%% trace and span id.
 record_metrics(#state{
+    span_ctx = SpanCtx,
     status_code = StatusCode,
     http_route = Route,
     req_start = ReqStart,
     req_body_length = ReqBodyLen,
     resp_body_length = RespBodyLen,
-    metric_attrs = MetricAttrs
+    metric_attrs = MetricAttrs,
+    error_type = Tag,
+    extra_metric_attrs = Extra
 }) ->
     Duration =
         erlang:convert_time_unit(erlang:monotonic_time() - ReqStart, native, microsecond) / 1000000,
-    FinalAttrs = maps:merge(MetricAttrs, maps:merge(route_attrs(Route), status_attrs(StatusCode))),
-    ?histogram_record('http.server.request.duration', Duration, FinalAttrs),
-    record_if_positive('http.server.request.body.size', ReqBodyLen, FinalAttrs),
-    record_if_positive('http.server.response.body.size', RespBodyLen, FinalAttrs),
+    Attrs = otel_nova_attributes:final_metric(MetricAttrs, Route, StatusCode, Tag, Extra),
+    Ctx = otel_tracer:set_current_span(otel_ctx:new(), SpanCtx),
+    otel_histogram:record(Ctx, ?current_meter, 'http.server.request.duration', Duration, Attrs),
+    record_if_positive(Ctx, 'http.server.request.body.size', ReqBodyLen, Attrs),
+    record_if_positive(Ctx, 'http.server.response.body.size', RespBodyLen, Attrs),
     ok.
 
-set_status_attributes(_SpanCtx, undefined) ->
+set_status_attributes(_SpanCtx, undefined, _Tag) ->
     ok;
-set_status_attributes(SpanCtx, Code) when Code >= 500 ->
+set_status_attributes(SpanCtx, Code, Tag) when Code >= 500 ->
     _ = otel_span:set_attributes(SpanCtx, #{
         'http.response.status_code' => Code,
-        'error.type' => integer_to_binary(Code)
+        'error.type' => otel_nova_http:error_type(Code, Tag)
     }),
-    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, ~"Server error"),
+    Description =
+        case Tag of
+            undefined -> ~"Server error";
+            _ -> Tag
+        end,
+    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Description),
     ok;
-set_status_attributes(SpanCtx, Code) ->
+set_status_attributes(SpanCtx, Code, _Tag) ->
     _ = otel_span:set_attribute(SpanCtx, 'http.response.status_code', Code),
     ok.
-
-route_attrs(undefined) -> #{};
-route_attrs(Route) -> #{'http.route' => Route}.
-
-status_attrs(undefined) ->
-    #{};
-status_attrs(Code) when Code >= 500 ->
-    #{'http.response.status_code' => Code, 'error.type' => integer_to_binary(Code)};
-status_attrs(Code) ->
-    #{'http.response.status_code' => Code}.
 
 body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).
 
-%% Cowboy logs the arguments and state of a crashing stream handler, which
-%% include the request headers and cookies. Instrumentation must never crash,
-%% and what it logs carries no request data.
+record_if_positive(Ctx, Name, Value, Attrs) when Value > 0 ->
+    otel_histogram:record(Ctx, ?current_meter, Name, Value, Attrs);
+record_if_positive(_Ctx, _Name, _Value, _Attrs) ->
+    ok.
+
 safely(Callback, Fun, Default) ->
     try
         Fun()
     catch
         Class:Reason:Stacktrace ->
-            log_failure(Callback, Class, Reason, Stacktrace),
+            otel_nova_http:log_failure(Callback, Class, Reason, Stacktrace),
             Default
     end.
-
--doc false.
--spec log_failure(atom(), error | exit | throw, term(), [tuple()]) -> ok.
-log_failure(Callback, Class, Reason, Stacktrace) ->
-    ?LOG_WARNING(#{
-        what => otel_nova_instrumentation_failed,
-        callback => Callback,
-        class => Class,
-        reason => reason_tag(Reason),
-        stacktrace => [strip_args(Frame) || Frame <- Stacktrace]
-    }),
-    ok.
-
-reason_tag(Reason) when is_atom(Reason) -> Reason;
-reason_tag(Reason) when is_tuple(Reason), is_atom(element(1, Reason)) -> element(1, Reason);
-reason_tag(_Reason) -> unknown.
-
-strip_args({Module, Function, Args, Location}) when is_list(Args) ->
-    {Module, Function, length(Args), Location};
-strip_args(Frame) ->
-    Frame.
-
-request_attributes(Req, Method) ->
-    OriginalMethod = cowboy_req:method(Req),
-    Path = cowboy_req:path(Req),
-    Scheme = cowboy_req:scheme(Req),
-    Host = cowboy_req:host(Req),
-    Port = cowboy_req:port(Req),
-    {PeerAddr, PeerPort} = cowboy_req:peer(Req),
-    PeerBin = peer_to_binary(PeerAddr),
-
-    Attrs0 = #{
-        'http.request.method' => Method,
-        'url.path' => Path,
-        'url.scheme' => Scheme,
-        'server.address' => Host,
-        'server.port' => Port,
-        'network.peer.address' => PeerBin,
-        'network.peer.port' => PeerPort,
-        'network.protocol.version' => protocol_version(Req),
-        'client.address' => client_address(Req, PeerBin)
-    },
-    Attrs1 =
-        case OriginalMethod of
-            Method -> Attrs0;
-            _ -> Attrs0#{'http.request.method_original' => OriginalMethod}
-        end,
-    case cowboy_req:header(~"user-agent", Req) of
-        undefined -> Attrs1;
-        UA -> Attrs1#{'user_agent.original' => UA}
-    end.
-
-%% Metric attributes become Prometheus series, so every value is bounded:
-%% the method and scheme are normalised, and the server address and port are
-%% only recorded for hosts on the metric_server_hosts allowlist, with the
-%% port taken from the socket rather than the Host header.
-metric_attributes(Req, Method) ->
-    Attrs = #{
-        'http.request.method' => Method,
-        'url.scheme' => otel_nova_http:scheme(cowboy_req:scheme(Req))
-    },
-    case application:get_env(opentelemetry_nova, metric_server_hosts, undefined) of
-        Hosts when is_list(Hosts) -> maps:merge(Attrs, server_attributes(Req, Hosts));
-        _ -> Attrs
-    end.
-
-server_attributes(Req, Hosts) ->
-    Host = cowboy_req:host(Req),
-    Address =
-        case lists:member(Host, Hosts) of
-            true -> Host;
-            false -> ~"_OTHER"
-        end,
-    {_IP, Port} = cowboy_req:sock(Req),
-    #{'server.address' => Address, 'server.port' => Port}.
-
-client_address(Req, PeerBin) ->
-    case application:get_env(opentelemetry_nova, trust_forwarded_for, false) of
-        true -> otel_nova_http:client_address(Req, PeerBin);
-        false -> PeerBin
-    end.
-
-peer_to_binary(Addr) ->
-    case inet:ntoa(Addr) of
-        {error, _} -> ~"unknown";
-        String -> list_to_binary(String)
-    end.
-
-protocol_version(#{version := 'HTTP/1.0'}) -> ~"1.0";
-protocol_version(#{version := 'HTTP/1.1'}) -> ~"1.1";
-protocol_version(#{version := 'HTTP/2'}) -> ~"2";
-protocol_version(#{version := 'HTTP/3'}) -> ~"3";
-protocol_version(_) -> ~"1.1".
-
-record_if_positive(Name, Value, Attrs) when Value > 0 ->
-    ?histogram_record(Name, Value, Attrs);
-record_if_positive(_, _, _) ->
-    ok.

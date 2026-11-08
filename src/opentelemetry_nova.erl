@@ -3,7 +3,7 @@
 OpenTelemetry instrumentation for Nova. See the README for the full setup.
 """.
 
--export([setup/0, setup/1]).
+-export([setup/0, setup/1, add_metric_attributes/2]).
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry_api_experimental/include/otel_meter.hrl").
@@ -49,3 +49,27 @@ setup(Opts) ->
             {ok, _} = otel_nova_prom_server:start_link(PromOpts),
             ok
     end.
+
+-doc """
+Adds attributes to the `http.server.request.duration`,
+`http.server.request.body.size` and `http.server.response.body.size`
+measurements of the current request. Call it from a controller or plugin with
+the Req of the request; later calls are merged in, a later value winning.
+
+Keys are atoms or binaries matching `^[a-zA-Z_][a-zA-Z0-9_.]*$` and are
+recorded as binaries. Values are atoms, booleans, integers or UTF-8 binaries
+of at most 64 bytes. A key whose Prometheus label form (dots become
+underscores) is `le`, a built-in label (`http_route`, `error_type`, ...) or
+the label of another added key is dropped, as is any invalid entry. At most
+10 keys are kept per request.
+
+Every distinct value becomes a separate metric series, so only use
+attributes with a small, bounded set of values.
+
+Does nothing when the request is not instrumented by `otel_nova_stream_h`.
+""".
+-spec add_metric_attributes(cowboy_req:req(), opentelemetry:attributes_map()) -> ok.
+add_metric_attributes(Req = #{otel_nova_ctx := _}, Attrs) when is_map(Attrs) ->
+    cowboy_req:cast({otel_nova_metric_attributes, Attrs}, Req);
+add_metric_attributes(_Req, Attrs) when is_map(Attrs) ->
+    ok.

@@ -9,6 +9,7 @@
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
+-include_lib("opentelemetry/include/otel_sampler.hrl").
 
 -define(TRACE_ID, 16#0af7651916cd43dd8448eb211c80319c).
 -define(SPAN_ID, 16#b7ad6b7169203331).
@@ -23,7 +24,11 @@ all() ->
         stream_handler_other_request_is_sampled,
         sampled_traceparent_forces_excluded_request_by_default,
         untrusted_context_does_not_force_sampling,
-        untrusted_context_starts_new_trace_with_link
+        untrusted_context_starts_new_trace_with_link,
+        map_config_delegates_to_sampler,
+        description_includes_delegate,
+        trust_callback_decides_per_request,
+        crashing_trust_callback_does_not_trust
     ].
 
 init_per_suite(Config) ->
@@ -124,6 +129,82 @@ untrusted_context_starts_new_trace_with_link(_Config) ->
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
+
+map_config_delegates_to_sampler(_Config) ->
+    Drop = otel_sampler:new(
+        {otel_nova_sampler, #{exclude => [~"GET /metrics"], sampler => {trace_id_ratio_based, 0.0}}}
+    ),
+    Keep = otel_sampler:new(
+        {otel_nova_sampler, #{exclude => [~"GET /metrics"], sampler => {trace_id_ratio_based, 1.0}}}
+    ),
+    ?assertMatch({?DROP, _, _}, decide(Drop, ~"/users")),
+    ?assertMatch({?RECORD_AND_SAMPLE, _, _}, decide(Keep, ~"/users")),
+    ?assertMatch({?DROP, _, _}, decide(Keep, ~"/metrics")),
+    Default = otel_sampler:new({otel_nova_sampler, #{}}),
+    ?assertMatch({?RECORD_AND_SAMPLE, _, _}, decide(Default, ~"/metrics")).
+
+description_includes_delegate(_Config) ->
+    Sampler = otel_sampler:new(
+        {otel_nova_sampler, #{exclude => [~"GET /metrics"], sampler => {trace_id_ratio_based, 0.5}}}
+    ),
+    Description = otel_sampler:description(Sampler),
+    ?assertNotEqual(nomatch, string:find(Description, ~"TraceIdRatioBased")),
+    ?assertNotEqual(nomatch, string:find(Description, ~"GET /metrics")),
+    ?assertNotEqual(
+        nomatch,
+        string:find(
+            otel_sampler:description(otel_sampler:new({otel_nova_sampler, []})), ~"AlwaysOn"
+        )
+    ).
+
+trust_callback_decides_per_request(_Config) ->
+    ok = application:set_env(
+        opentelemetry_nova, trust_incoming_context, {otel_nova_test_controller, trust_internal}
+    ),
+    run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT, ~"x-internal" => ~"yes"}),
+    receive
+        {span, #span{trace_id = Trusted}} -> ?assertEqual(?TRACE_ID, Trusted)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end,
+    run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT}),
+    receive
+        {span, #span{trace_id = Untrusted, links = Links}} ->
+            ?assertNotEqual(?TRACE_ID, Untrusted),
+            ?assertMatch([#link{trace_id = ?TRACE_ID}], otel_links:list(Links))
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+crashing_trust_callback_does_not_trust(_Config) ->
+    [
+        begin
+            ok = application:set_env(opentelemetry_nova, trust_incoming_context, Setting),
+            run_request(~"GET", ~"/users", #{~"traceparent" => ?TRACEPARENT}),
+            receive
+                {span, #span{trace_id = TraceId}} -> ?assertNotEqual(?TRACE_ID, TraceId, Setting)
+            after 5000 ->
+                ct:fail(timeout_waiting_for_span)
+            end
+        end
+     || Setting <- [
+            {otel_nova_test_controller, crashing_trust},
+            {otel_nova_test_controller, missing},
+            {otel_nova_test_controller, span_name},
+            "true"
+        ]
+    ].
+
+decide(Sampler, Path) ->
+    otel_sampler:should_sample(
+        Sampler,
+        otel_ctx:new(),
+        ?TRACE_ID,
+        otel_links:new([], 128, 128, 128),
+        ~"HTTP GET",
+        ?SPAN_KIND_SERVER,
+        #{'http.request.method' => ~"GET", 'url.path' => Path}
+    ).
 
 run_request(Method, Path) ->
     run_request(Method, Path, #{}).
