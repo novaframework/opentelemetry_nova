@@ -408,6 +408,9 @@ master):
   crash there.
 - `throw({Status, Reason})` from a controller is a deliberate status, not a
   crash: `error.type` is the status code for a 5xx, as usual.
+- A crash Nova renders with a status below 500, such as the 404 it uses for
+  a crashing Cowboy handler: not tagged, and the span status is not set to
+  error.
 - Security function crash, or a crash in a `post_request` plugin listed before
   `otel_nova_plugin`: not tagged, `error.type` stays the status code.
 

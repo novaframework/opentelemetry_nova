@@ -704,7 +704,15 @@ plugin_tags_crash_from_crash_info(_Config) ->
         ]
     ],
     ?assertEqual(
-        {~"badarg", ~"badarg", undefined}, crash_tags(#{class => error, reason => badarg}, 404)
+        {~"badarg", ~"badarg", ~"badarg"},
+        crash_tags(#{class => error, reason => badarg}, undefined, 500)
+    ),
+    ?assertEqual(
+        {undefined, undefined, undefined}, crash_tags(#{class => error, reason => badarg}, 404)
+    ),
+    ?assertEqual(
+        {undefined, undefined, undefined},
+        crash_tags(#{class => error, reason => badarg, status_code => 404}, undefined, 404)
     ).
 
 plugin_uses_span_name_formatter(_Config) ->
@@ -730,7 +738,12 @@ plugin_falls_back_when_span_name_formatter_fails(_Config) ->
 plugin_ignores_crash_info_without_reason(_Config) ->
     [
         ?assertEqual({~"500", undefined, ~"500"}, crash_tags(CrashInfo, 500), CrashInfo)
-     || CrashInfo <- [unavailable, #{status_code => 500, title => ~"Error in controller"}]
+     || CrashInfo <- [
+            unavailable,
+            #{status_code => 500, title => ~"Error in controller"},
+            #{reason => badarg},
+            #{class => error}
+        ]
     ].
 
 plugin_sets_logger_metadata_with_trace_ids(_Config) ->
@@ -1069,11 +1082,20 @@ plugin_route(Req, Env) ->
 %% Runs a request whose post_request sees CrashInfo and returns the span
 %% error.type, the span status message and the duration metric error.type.
 crash_tags(CrashInfo, Status) ->
+    crash_tags(CrashInfo, Status, Status).
+
+crash_tags(CrashInfo, RespStatus, Status) ->
     Path = iolist_to_binary(["/crash/", integer_to_list(erlang:unique_integer([positive]))]),
     {State0, DownReq} = start_stream(1, make_req(~"GET", Path)),
     State1 = run_plugin(DownReq, #{}, State0),
     {ok, _, _} = otel_nova_plugin:post_request(
-        DownReq#{crash_info => CrashInfo}, #{}, #{}, undefined
+        maps:filter(
+            fun(_, V) -> V =/= undefined end,
+            DownReq#{crash_info => CrashInfo, resp_status_code => RespStatus}
+        ),
+        #{},
+        #{},
+        undefined
     ),
     State2 = forward_casts(1, State1),
     {_Cmds, State3} = otel_nova_stream_h:info(1, {response, Status, #{}, ~"Error"}, State2),

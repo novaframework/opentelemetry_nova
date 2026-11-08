@@ -25,7 +25,8 @@ set to `{Mod, Fun}`, it is named `Mod:Fun(Method, Route)` instead, where
 keeps the default name.
 
 Also register it as a `post_request` plugin. When Nova reports a controller
-or plugin crash in `crash_info`, it sets `error.type` on the server span to
+or plugin crash in `crash_info` and renders a 5xx (or an unknown status), it
+sets `error.type` on the server span to
 the crash reason (the reason atom, the tag of a tagged tuple, or the class),
 sets the span status to error and reports the tag to the stream handler,
 which uses it as the `error.type` metric attribute of a 5xx response.
@@ -106,16 +107,27 @@ rename(SpanCtx, Name) ->
     ok.
 
 %% Nova stores `crash_info` in the Req when a controller or plugin crashes and
-%% renders a status page instead. A map with a `reason` comes from a crash; a
-%% `throw({Status, Reason})` stores the bare Reason and is not an error.
-record_crash(Req = #{crash_info := #{reason := Reason} = CrashInfo}) ->
-    Tag = error_tag(Reason, maps:get(class, CrashInfo, undefined)),
-    SpanCtx = request_span_ctx(Req),
-    annotate(SpanCtx, #{'error.type' => Tag}),
-    set_error(SpanCtx, Tag),
-    report(otel_nova_error_type, Tag, Req);
+%% renders a status page instead. A crash stores a map with the class and the
+%% reason; a `throw({Status, Reason})` stores the bare Reason, which can be a
+%% map too, and is not an error. A crash rendered as a status below 500, such
+%% as the 404 Nova uses for a crashing Cowboy handler, is not tagged either.
+record_crash(Req = #{crash_info := #{class := Class, reason := Reason} = CrashInfo}) ->
+    case crash_status(Req, CrashInfo) of
+        Status when is_integer(Status), Status < 500 ->
+            ok;
+        _ ->
+            Tag = error_tag(Reason, Class),
+            SpanCtx = request_span_ctx(Req),
+            annotate(SpanCtx, #{'error.type' => Tag}),
+            set_error(SpanCtx, Tag),
+            report(otel_nova_error_type, Tag, Req)
+    end;
 record_crash(_Req) ->
     ok.
+
+crash_status(#{resp_status_code := Status}, _CrashInfo) -> Status;
+crash_status(_Req, #{status_code := Status}) -> Status;
+crash_status(_Req, _CrashInfo) -> undefined.
 
 error_tag(Reason, _Class) when is_atom(Reason) ->
     atom_to_binary(Reason);
@@ -123,7 +135,7 @@ error_tag(Reason, _Class) when
     is_tuple(Reason), tuple_size(Reason) > 0, is_atom(element(1, Reason))
 ->
     atom_to_binary(element(1, Reason));
-error_tag(_Reason, Class) when is_atom(Class), Class =/= undefined ->
+error_tag(_Reason, Class) when is_atom(Class) ->
     atom_to_binary(Class);
 error_tag(_Reason, _Class) ->
     ~"_OTHER".
