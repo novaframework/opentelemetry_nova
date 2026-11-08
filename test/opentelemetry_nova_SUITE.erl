@@ -41,6 +41,8 @@ all() ->
         stream_handler_rejects_invalid_forwarded_for,
         stream_handler_normalises_unknown_method,
         stream_handler_tags_stream_failure,
+        stream_handler_sets_redacted_url_query,
+        stream_handler_url_query_options,
         stream_handler_ignores_failure_after_response,
         plugin_enriches_span,
         plugin_sets_http_route,
@@ -88,8 +90,21 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(_TestCase, _Config) ->
     persistent_term:erase(test_metric_pid),
-    _ = application:unset_env(opentelemetry_nova, trust_forwarded_for),
-    _ = application:unset_env(opentelemetry_nova, metric_server_hosts),
+    [
+        application:unset_env(opentelemetry_nova, Key)
+     || Key <- [
+            trust_forwarded_for,
+            metric_server_hosts,
+            url_query,
+            url_query_redact_keys,
+            request_headers,
+            response_headers,
+            sensitive_headers,
+            opt_in_attributes,
+            span_name_formatter,
+            trust_incoming_context
+        ]
+    ],
     otel_ctx:clear(),
     ok.
 
@@ -312,6 +327,34 @@ stream_handler_tags_stream_failure(_Config) ->
         ?assertNot(maps:is_key('http.response.status_code', DP#histogram_datapoint.attributes)),
         ?assertEqual(1, DP#histogram_datapoint.count)
     end).
+
+stream_handler_sets_redacted_url_query(_Config) ->
+    Req = (make_req(~"GET", ~"/search"))#{
+        qs =>
+            ~"q=a+b&token=abc&Signature=x%2F&X-AMZ-Credential=y&b=%41&flag&p%61ssword=s&Code=1&key"
+    },
+    ?assertEqual(
+        ~"q=a+b&token=REDACTED&Signature=REDACTED&X-AMZ-Credential=REDACTED&b=%41&flag&p%61ssword=REDACTED&Code=REDACTED&key",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ),
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), make_req(~"GET", ~"/")))),
+    Invalid = (make_req(~"GET", ~"/"))#{qs => <<"q=", 16#FF>>},
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Invalid))).
+
+stream_handler_url_query_options(_Config) ->
+    Req = (make_req(~"GET", ~"/search"))#{qs => ~"session_id=1&Tenant=a&token=t&q=x"},
+    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, [~"session_id", ~"TENANT"]),
+    ?assertEqual(
+        ~"session_id=REDACTED&Tenant=REDACTED&token=REDACTED&q=x",
+        maps:get('url.query', span_attributes(stream_opts(), Req))
+    ),
+    ok = application:set_env(opentelemetry_nova, url_query, false),
+    ?assertNot(maps:is_key('url.query', span_attributes(stream_opts(), Req))),
+    ok = application:set_env(opentelemetry_nova, url_query, true),
+    ok = application:set_env(opentelemetry_nova, url_query_redact_keys, not_a_list),
+    Attrs = span_attributes(stream_opts(), Req),
+    ?assertNot(maps:is_key('url.query', Attrs)),
+    ?assertEqual(~"/search", maps:get('url.path', Attrs)).
 
 stream_handler_ignores_failure_after_response(_Config) ->
     Req = make_req(~"GET", ~"/late-failure"),

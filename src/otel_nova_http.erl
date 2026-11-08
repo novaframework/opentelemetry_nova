@@ -2,9 +2,31 @@
 -moduledoc false.
 
 -export([method/1, scheme/1, span_method/1, client_address/2, is_utf8/1]).
+-export([redact_query/2, lowercase/1]).
 
 -define(KNOWN_METHODS, [
     ~"GET", ~"HEAD", ~"POST", ~"PUT", ~"DELETE", ~"CONNECT", ~"OPTIONS", ~"TRACE", ~"PATCH"
+]).
+
+-define(REDACTED_QUERY_KEYS, [
+    ~"awsaccesskeyid",
+    ~"signature",
+    ~"sig",
+    ~"x-goog-signature",
+    ~"x-amz-signature",
+    ~"x-amz-credential",
+    ~"x-amz-security-token",
+    ~"access_token",
+    ~"id_token",
+    ~"refresh_token",
+    ~"token",
+    ~"api_key",
+    ~"apikey",
+    ~"key",
+    ~"password",
+    ~"secret",
+    ~"code",
+    ~"state"
 ]).
 
 -spec method(binary()) -> binary().
@@ -39,6 +61,39 @@ client_address(Req, Peer) ->
 -spec is_utf8(binary()) -> boolean().
 is_utf8(Bin) ->
     unicode:characters_to_binary(Bin) =:= Bin.
+
+%% Only the values of matching keys are replaced; everything else, including
+%% the encoding of the other pairs, is kept as sent.
+-spec redact_query(binary(), [binary()]) -> binary().
+redact_query(Qs, ExtraKeys) ->
+    Keys = ?REDACTED_QUERY_KEYS ++ [lowercase(Key) || Key <- ExtraKeys],
+    Pairs = binary:split(Qs, ~"&", [global]),
+    iolist_to_binary(lists:join(~"&", [redact_pair(Pair, Keys) || Pair <- Pairs])).
+
+redact_pair(Pair, Keys) ->
+    case binary:split(Pair, ~"=") of
+        [Key, _Value] ->
+            case lists:member(query_key(Key), Keys) of
+                true -> <<Key/binary, "=REDACTED">>;
+                false -> Pair
+            end;
+        [_Key] ->
+            Pair
+    end.
+
+query_key(Key) ->
+    Plain = binary:replace(Key, ~"+", ~" ", [global]),
+    case uri_string:percent_decode(Plain) of
+        Decoded when is_binary(Decoded) -> lowercase(Decoded);
+        {error, _, _} -> lowercase(Plain)
+    end.
+
+-spec lowercase(binary()) -> binary().
+lowercase(Bin) ->
+    <<<<(ascii_lower(C))>> || <<C>> <= Bin>>.
+
+ascii_lower(C) when C >= $A, C =< $Z -> C + 32;
+ascii_lower(C) -> C.
 
 forwarded_for(Forwarded) ->
     case re:run(Forwarded, ~"for=\"?([^;,\"]+)\"?", [{capture, [1], binary}, caseless]) of

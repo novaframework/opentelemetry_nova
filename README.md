@@ -145,12 +145,22 @@ Set these in the `opentelemetry_nova` application environment:
 | `trust_forwarded_for` | `false` | Take `client.address` from the first `X-Forwarded-For` entry, or the `Forwarded` header, when it is a valid IP address. Otherwise `client.address` is the peer address. |
 | `metric_server_hosts` | unset | Record `server.address` and `server.port` on metrics. Hosts on the list are recorded as sent (Cowboy lowercases them), others as `_OTHER`, and the port is the listener's. When unset, metrics carry neither attribute. |
 | `trust_incoming_context` | `true` | Continue the trace context and baggage the client sends. Set it to `false` on a public edge: the server span then starts a new trace and links to the remote parent. |
+| `url_query` | `true` | Set `url.query` on the span when the request has a query string. `false` leaves it out. |
+| `url_query_redact_keys` | `[]` | Query keys whose values are replaced by `REDACTED` in `url.query`, in addition to the defaults below. Binaries, matched case-insensitively. |
 
 Enable `trust_forwarded_for` only behind a proxy that replaces these headers
 with its own value. Many proxies append to `X-Forwarded-For` instead (nginx
 with `$proxy_add_x_forwarded_for`, Traefik, ingress-nginx), so the first entry
 is still whatever the client sent, and `client.address` stays
 client-controlled.
+
+`url.query` keeps the query string as sent, except that the values of these
+keys become `REDACTED` (keys are percent-decoded and matched
+case-insensitively): `AWSAccessKeyId`, `Signature`, `sig`,
+`X-Goog-Signature`, `X-Amz-Signature`, `X-Amz-Credential`,
+`X-Amz-Security-Token`, `access_token`, `id_token`, `refresh_token`, `token`,
+`api_key`, `apikey`, `key`, `password`, `secret`, `code`, `state`. A query
+string that is not valid UTF-8 is left out.
 
 With `trust_incoming_context` at its default, a client that sends a sampled
 `traceparent` decides the sampling of its own request, including requests
@@ -270,6 +280,7 @@ Server spans are created for every HTTP request with the following attributes:
 | `http.response.status_code` | Response status code |
 | `http.route` | Matched route template (e.g. `/users/:id`) |
 | `url.path` | Request path |
+| `url.query` | Query string with secret values redacted, when present (see [Options](#4-options)) |
 | `url.scheme` | Request scheme |
 | `server.address` | Host header |
 | `server.port` | Server port |

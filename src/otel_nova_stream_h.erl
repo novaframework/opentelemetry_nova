@@ -25,6 +25,9 @@ Options, read from the `opentelemetry_nova` application environment:
 * `trust_incoming_context` (default `true`): continue the trace context and
   baggage the client sends. When `false` the server span starts a new trace
   and links to the remote parent.
+* `url_query` (default `true`): set `url.query`, with the values of secret
+  keys replaced by `REDACTED`.
+* `url_query_redact_keys` (default `[]`): more query keys to redact.
 
 The method is normalised to one of the nine standard methods or `_OTHER`, on
 both spans and metrics. Spans keep the sent value as
@@ -105,9 +108,10 @@ early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
 
 start_request(Req, State) ->
     Method = safely(init, fun() -> otel_nova_http:method(cowboy_req:method(Req)) end, ~"_OTHER"),
-    Attrs = safely(init, fun() -> request_attributes(Req, Method) end, #{
+    Attrs0 = safely(init, fun() -> request_attributes(Req, Method) end, #{
         'http.request.method' => Method
     }),
+    Attrs = maps:merge(Attrs0, safely(init, fun() -> query_attributes(Req) end, #{})),
     MetricAttrs = safely(init, fun() -> metric_attributes(Req, Method) end, #{
         'http.request.method' => Method
     }),
@@ -307,6 +311,21 @@ request_attributes(Req, Method) ->
         undefined -> Attrs1;
         UA -> Attrs1#{'user_agent.original' => UA}
     end.
+
+query_attributes(Req) ->
+    case {opt(url_query, true), cowboy_req:qs(Req)} of
+        {true, Qs} when Qs =/= ~"" ->
+            Query = otel_nova_http:redact_query(Qs, opt(url_query_redact_keys, [])),
+            case otel_nova_http:is_utf8(Query) of
+                true -> #{'url.query' => Query};
+                false -> #{}
+            end;
+        _ ->
+            #{}
+    end.
+
+opt(Key, Default) ->
+    application:get_env(opentelemetry_nova, Key, Default).
 
 %% Metric attributes become Prometheus series, so every value is bounded:
 %% the method and scheme are normalised, and the server address and port are
