@@ -174,6 +174,19 @@ the query string), not the route template, so `~"GET /users/:id"` does not match
 `/users/42`. With `parent_based`, a request carrying a sampled `traceparent`
 follows its parent, unless `trust_incoming_context` is `false`.
 
+To sample the requests that are not excluded with another sampler, pass a map
+with the exclusions and a sampler spec (default `always_on`). Any spec that
+`otel_sampler:new/1` accepts works:
+
+```erlang
+{opentelemetry, [
+    {sampler, {parent_based, #{root => {otel_nova_sampler, #{
+        exclude => [~"GET /metrics", ~"GET /healthz"],
+        sampler => {trace_id_ratio_based, 0.1}
+    }}}}}
+]}
+```
+
 ## Prometheus metrics
 
 Configure a metric reader that exports to `otel_nova_prom_exporter`:

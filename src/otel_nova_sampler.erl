@@ -21,6 +21,16 @@ elsewhere with a final name.
 
 Only server spans are dropped. Wrapped in `parent_based`, it decides for root
 spans only; a request with a sampled `traceparent` follows its parent.
+
+To sample the remaining spans with another sampler, pass a map with the
+exclusions and a sampler spec, which defaults to `always_on`:
+
+```erlang
+{otel_nova_sampler, #{
+    exclude => [~"GET /metrics"],
+    sampler => {trace_id_ratio_based, 0.1}
+}}
+```
 """.
 -behavior(otel_sampler).
 
@@ -30,15 +40,24 @@ spans only; a request with a sampled `traceparent` follows its parent.
 -include_lib("opentelemetry/include/otel_sampler.hrl").
 
 setup(ExcludeList) when is_list(ExcludeList) ->
-    #{exclude => ExcludeList}.
+    setup(#{exclude => ExcludeList});
+setup(Opts) when is_map(Opts) ->
+    #{
+        exclude => maps:get(exclude, Opts, []),
+        sampler => otel_sampler:new(maps:get(sampler, Opts, always_on))
+    }.
 
-description(#{exclude := List}) ->
-    iolist_to_binary(io_lib:format("Exclude server spans: ~p", [List])).
+description(#{exclude := List, sampler := Sampler}) ->
+    iolist_to_binary(
+        io_lib:format("Exclude server spans: ~p, else ~ts", [
+            List, otel_sampler:description(Sampler)
+        ])
+    ).
 
-should_sample(_Ctx, _TraceId, _Links, Name, Kind, Attrs, #{exclude := List}) ->
+should_sample(Ctx, TraceId, Links, Name, Kind, Attrs, #{exclude := List, sampler := Sampler}) ->
     case Kind =:= ?SPAN_KIND_SERVER andalso excluded(Name, Attrs, List) of
         true -> {?DROP, [], []};
-        false -> {?RECORD_AND_SAMPLE, [], []}
+        false -> otel_sampler:should_sample(Sampler, Ctx, TraceId, Links, Name, Kind, Attrs)
     end.
 
 excluded(Name, Attrs, List) ->
