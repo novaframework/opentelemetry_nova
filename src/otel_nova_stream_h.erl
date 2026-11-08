@@ -87,7 +87,7 @@ info(StreamID, Info, State0) ->
 
 -spec terminate(cowboy_stream:streamid(), cowboy_stream:reason(), #state{}) -> any().
 terminate(StreamID, Reason, State = #state{next = Next}) ->
-    safely(terminate, fun() -> finish_request(State) end, ok),
+    safely(terminate, fun() -> finish_request(stream_failure(Reason, State)) end, ok),
     cowboy_stream:terminate(StreamID, Reason, Next).
 
 -spec early_error(
@@ -156,6 +156,29 @@ observe({error_response, Code, _Headers, Body}, State) when is_integer(Code) ->
 observe(_Info, State) ->
     State.
 
+%% A stream that ends without a response, such as a client that closes the
+%% connection or a request timeout, is tagged with the reason Cowboy gives.
+stream_failure(_Reason, State = #state{status_code = Code}) when is_integer(Code) ->
+    State;
+stream_failure(normal, State) ->
+    State;
+stream_failure(switch_protocol, State) ->
+    State;
+stream_failure(Reason, State = #state{span_ctx = SpanCtx}) ->
+    Tag = stream_failure_tag(Reason),
+    _ = otel_span:set_attribute(SpanCtx, 'error.type', Tag),
+    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Tag),
+    State#state{error_type = Tag}.
+
+stream_failure_tag(Reason) when is_atom(Reason) ->
+    atom_to_binary(Reason);
+stream_failure_tag(Reason) when
+    is_tuple(Reason), tuple_size(Reason) > 0, is_atom(element(1, Reason))
+->
+    atom_to_binary(element(1, Reason));
+stream_failure_tag(_Reason) ->
+    ~"_OTHER".
+
 finish_request(#state{span_ctx = undefined}) ->
     ok;
 finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode, error_type = Tag}) ->
@@ -207,8 +230,10 @@ set_status_attributes(SpanCtx, Code, _Tag) ->
 route_attrs(undefined) -> #{};
 route_attrs(Route) -> #{'http.route' => Route}.
 
-status_attrs(undefined, _Tag) ->
+status_attrs(undefined, undefined) ->
     #{};
+status_attrs(undefined, Tag) ->
+    #{'error.type' => Tag};
 status_attrs(Code, Tag) when Code >= 500 ->
     #{'http.response.status_code' => Code, 'error.type' => error_type(Code, Tag)};
 status_attrs(Code, _Tag) ->

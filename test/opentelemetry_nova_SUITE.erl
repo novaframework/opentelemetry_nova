@@ -40,6 +40,8 @@ all() ->
         stream_handler_ignores_forwarded_for_by_default,
         stream_handler_rejects_invalid_forwarded_for,
         stream_handler_normalises_unknown_method,
+        stream_handler_tags_stream_failure,
+        stream_handler_ignores_failure_after_response,
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
@@ -276,6 +278,57 @@ stream_handler_normalises_unknown_method(_Config) ->
     end),
     GetReq = make_req(~"GET", ~"/users"),
     ?assertNot(maps:is_key('http.request.method_original', span_attributes(stream_opts(), GetReq))).
+
+stream_handler_tags_stream_failure(_Config) ->
+    [
+        begin
+            Path = atom_to_binary(element(1, Reason)),
+            Req = make_req(~"GET", <<"/", Path/binary>>),
+            {_Cmds, State} = otel_nova_stream_h:init(1, Req, stream_opts()),
+            otel_nova_stream_h:terminate(1, Reason, State),
+            otel_tracer_provider:force_flush(),
+            Span = receive_span(<<"/", Path/binary>>),
+            Attrs = otel_nova_test_util:span_attrs(Span),
+            ?assertEqual(Path, maps:get('error.type', Attrs)),
+            ?assertNot(maps:is_key('http.response.status_code', Attrs)),
+            ?assertMatch(#status{code = ?OTEL_STATUS_ERROR, message = Path}, Span#span.status)
+        end
+     || Reason <- [
+            {socket_error, closed, ~"The socket has been closed."},
+            {internal_error, timeout, ~"Request timed out."},
+            {stream_error, protocol_error, ~"Bad frame."},
+            {connection_error, protocol_error, ~"Bad frame."},
+            {stop, {exit, shutdown}, ~"Stopped."}
+        ]
+    ],
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        [DP] = [
+            DP
+         || DP = #histogram_datapoint{attributes = #{'error.type' := ~"socket_error"}} <-
+                Datapoints
+        ],
+        ?assertNot(maps:is_key('http.response.status_code', DP#histogram_datapoint.attributes)),
+        ?assertEqual(1, DP#histogram_datapoint.count)
+    end).
+
+stream_handler_ignores_failure_after_response(_Config) ->
+    Req = make_req(~"GET", ~"/late-failure"),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, Req, stream_opts()),
+    {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, ~"OK"}, State0),
+    otel_nova_stream_h:terminate(1, {socket_error, closed, ~"closed"}, State1),
+    otel_tracer_provider:force_flush(),
+    Span = receive_span(~"/late-failure"),
+    ?assertNot(maps:is_key('error.type', otel_nova_test_util:span_attrs(Span))),
+    ?assertNotMatch(#status{code = ?OTEL_STATUS_ERROR}, Span#span.status),
+    Normal = make_req(~"GET", ~"/no-response"),
+    {_Cmds2, State2} = otel_nova_stream_h:init(1, Normal, stream_opts()),
+    otel_nova_stream_h:terminate(1, normal, State2),
+    otel_tracer_provider:force_flush(),
+    ?assertNot(
+        maps:is_key('error.type', otel_nova_test_util:span_attrs(receive_span(~"/no-response")))
+    ).
 
 stream_handler_ends_span_on_auth_rejection(_Config) ->
     %% Simulates what happens when nova_security_handler returns {stop, Req}:
