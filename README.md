@@ -64,7 +64,8 @@ Tracing needs three pieces: the stream handler, the plugin and a call to
     }},
     {plugins, [
         {pre_request, otel_nova_plugin, #{}},
-        {pre_request, nova_request_plugin, #{decode_json_body => true}}
+        {pre_request, nova_request_plugin, #{decode_json_body => true}},
+        {post_request, otel_nova_plugin, #{}}
     ]}
 ]}
 ```
@@ -93,6 +94,9 @@ plugins run before the group's own:
 ```erlang
 {nova_apps, [{my_admin_app, #{prefix => "/admin", plugin_strategy => global_first}}]}
 ```
+
+Register `otel_nova_plugin` as the first `post_request` plugin as well, so
+crashes are tagged (see [Crashes](#crashes)).
 
 `otel_nova_plugin` never fails a request: if its instrumentation crashes it
 logs `otel_nova_instrumentation_failed` without request data and lets the
@@ -261,7 +265,7 @@ Server spans are created for every HTTP request with the following attributes:
 | `network.peer.port` | Peer port |
 | `network.protocol.version` | HTTP version (`1.0`, `1.1`, `2`, `3`) |
 | `user_agent.original` | User-Agent header |
-| `error.type` | Status code as string on 5xx errors |
+| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors |
 | `nova.app` | Nova application name |
 | `nova.controller` | Controller module |
 | `nova.action` | Action function |
@@ -294,6 +298,32 @@ Notes:
   server span.
 - With `cowboy_compress_h` after `otel_nova_stream_h`, the response body size
   is measured before compression.
+
+## Crashes
+
+When a controller or plugin crashes, Nova logs the crash, renders a status
+page and stores `crash_info` in the Req. `otel_nova_plugin` reads it and sets
+`error.type` on the server span to a low-cardinality tag: the reason when it
+is an atom (`badarg`), the first element of a tagged tuple (`badmatch` for
+`{badmatch, _}`), otherwise the class (`error`, `exit`, `throw`). The span
+status is set to error with the tag as description, and for a 5xx response
+the `error.type` metric attribute is the tag instead of the status code.
+
+No exception event is added to the span. Nova logs the crash in the request
+process, where the trace context is attached, so the log record carries the
+`trace_id` and `span_id`.
+
+What is tagged depends on where the crash happens (checked against Nova
+master):
+
+- Controller crash: Nova runs the `post_request` plugins, which tag it.
+- `pre_request` plugin crash: Nova skips the `post_request` plugins and runs
+  the `pre_request` plugins a second time instead. `otel_nova_plugin` tags the
+  crash there.
+- `throw({Status, Reason})` from a controller is a deliberate status, not a
+  crash: `error.type` is the status code for a 5xx, as usual.
+- Security function crash, or a crash in a `post_request` plugin listed before
+  `otel_nova_plugin`: not tagged, `error.type` stays the status code.
 
 ## Metrics
 

@@ -18,16 +18,24 @@
     request_labels_are_bounded/1,
     invalid_utf8_from_h2_keeps_exposition_valid/1,
     invalid_forwarded_for_still_records_request/1,
-    prom_server_binds_loopback_by_default/1
+    prom_server_binds_loopback_by_default/1,
+    controller_crash_sets_error_type/1,
+    controller_crash_with_tagged_tuple_sets_error_type/1,
+    thrown_status_is_not_tagged/1,
+    plugin_crash_sets_error_type/1,
+    security_crash_keeps_status_error_type/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 
 -define(HTTP_PORT, 58607).
 -define(METRICS_PORT, 58617).
+-define(NOVA_PORT, 58627).
 -define(LISTENER, otel_nova_integration_http).
+-define(NOVA_LISTENER, otel_nova_integration_nova).
 -define(COOKIE, "session=s3cr3t-cookie-value").
 -define(SAMPLE_LINE,
     ~"^[a-zA-Z_:][a-zA-Z0-9_:]*(\\{[a-zA-Z_][a-zA-Z0-9_]*=\"(?:[^\"\\\\\\n]|\\\\[\\\\\"n])*\"(,[a-zA-Z_][a-zA-Z0-9_]*=\"(?:[^\"\\\\\\n]|\\\\[\\\\\"n])*\")*\\})? [-+0-9.eE]+(Inf)?$"
@@ -49,7 +57,12 @@ all() ->
         request_labels_are_bounded,
         invalid_utf8_from_h2_keeps_exposition_valid,
         invalid_forwarded_for_still_records_request,
-        prom_server_binds_loopback_by_default
+        prom_server_binds_loopback_by_default,
+        controller_crash_sets_error_type,
+        controller_crash_with_tagged_tuple_sets_error_type,
+        thrown_status_is_not_tagged,
+        plugin_crash_sets_error_type,
+        security_crash_keeps_status_error_type
     ].
 
 init_per_suite(Config) ->
@@ -70,10 +83,31 @@ init_per_suite(Config) ->
         middlewares => [otel_nova_test_router, nova_plugin_handler, otel_nova_test_handler],
         env => #{static_file => {StaticFile, byte_size(StaticBody)}}
     }),
-    [{plugin_manager, PluginManager}, {static_body, StaticBody} | Config].
+    {ok, Handlers} = nova_handlers:start_link(),
+    unlink(Handlers),
+    persistent_term:put(nova_dispatch, nova_routing_trie:new()),
+    {ok, _} = cowboy:start_clear(?NOVA_LISTENER, [{port, ?NOVA_PORT}], #{
+        stream_handlers => [otel_nova_stream_h, cowboy_stream_h],
+        middlewares => [
+            otel_nova_test_router,
+            nova_plugin_handler,
+            nova_security_handler,
+            nova_handler,
+            nova_plugin_handler
+        ]
+    }),
+    [
+        {plugin_manager, PluginManager},
+        {nova_handlers, Handlers},
+        {static_body, StaticBody}
+        | Config
+    ].
 
 end_per_suite(Config) ->
     ok = cowboy:stop_listener(?LISTENER),
+    ok = cowboy:stop_listener(?NOVA_LISTENER),
+    persistent_term:erase(nova_dispatch),
+    gen_server:stop(?config(nova_handlers, Config)),
     gen_server:stop(?config(plugin_manager, Config)),
     application:stop(opentelemetry_experimental),
     application:stop(opentelemetry),
@@ -320,9 +354,45 @@ prom_server_binds_loopback_by_default(_Config) ->
         otel_nova_prom_server:stop()
     end.
 
+controller_crash_sets_error_type(_Config) ->
+    assert_crash_tagged("/nova/crash", ~"badarg").
+
+controller_crash_with_tagged_tuple_sets_error_type(_Config) ->
+    assert_crash_tagged("/nova/crash_tuple", ~"badmatch").
+
+%% Nova renders a pre_request plugin crash without running the post_request
+%% plugins; it runs the pre_request plugins a second time instead, where
+%% otel_nova_plugin picks up crash_info.
+plugin_crash_sets_error_type(_Config) ->
+    assert_crash_tagged("/nova/plugin_crash", ~"plugin_boom").
+
+thrown_status_is_not_tagged(_Config) ->
+    {503, _} = request(?NOVA_PORT, "/nova/throw_status", []),
+    [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
+    ?assertEqual(~"503", maps:get('error.type', otel_nova_test_util:span_attrs(Server))).
+
+%% A crashing security function stops the middleware chain before any plugin
+%% sees crash_info.
+security_crash_keeps_status_error_type(_Config) ->
+    {500, _} = request(?NOVA_PORT, "/nova/security_crash", []),
+    [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
+    ?assertEqual(~"500", maps:get('error.type', otel_nova_test_util:span_attrs(Server))).
+
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
+
+assert_crash_tagged(Path, Tag) ->
+    {500, _} = request(?NOVA_PORT, Path, []),
+    [Server] = [S || S = #span{kind = server} <- receive_spans(1)],
+    Attrs = otel_nova_test_util:span_attrs(Server),
+    ?assertEqual(Tag, maps:get('error.type', Attrs)),
+    ?assertEqual(500, maps:get('http.response.status_code', Attrs)),
+    ?assertMatch(#status{code = ?OTEL_STATUS_ERROR, message = Tag}, Server#span.status),
+    await_metric(
+        <<"http_server_request_duration_seconds_count\\{[^}]*error_type=\"", Tag/binary,
+            "\"[^}]*http_route=\"", (list_to_binary(Path))/binary, "\"">>
+    ).
 
 load_test_app(Mode) ->
     ok = application:load(

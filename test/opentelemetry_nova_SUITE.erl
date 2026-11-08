@@ -49,6 +49,8 @@ all() ->
         plugin_prefers_route_from_nova,
         plugin_ignores_invalid_route_from_nova,
         plugin_sets_logger_metadata_with_trace_ids,
+        plugin_tags_crash_from_crash_info,
+        plugin_ignores_crash_info_without_reason,
         plugin_skips_logger_metadata_without_valid_span,
         stream_handler_restores_context_on_terminate,
         trace_context_propagation,
@@ -412,6 +414,26 @@ plugin_ignores_invalid_route_from_nova(_Config) ->
      || Route <- [<<"/bad", 16#FF>>, '/api/:id', 42]
     ].
 
+plugin_tags_crash_from_crash_info(_Config) ->
+    [
+        ?assertEqual({Tag, Tag, Tag}, crash_tags(CrashInfo, 500), CrashInfo)
+     || {CrashInfo, Tag} <- [
+            {#{class => error, reason => badarg}, ~"badarg"},
+            {#{class => error, reason => {badmatch, 1}, stacktrace => []}, ~"badmatch"},
+            {#{class => exit, reason => "text"}, ~"exit"},
+            {#{class => "odd", reason => {}}, ~"_OTHER"}
+        ]
+    ],
+    ?assertEqual(
+        {~"badarg", ~"badarg", undefined}, crash_tags(#{class => error, reason => badarg}, 404)
+    ).
+
+plugin_ignores_crash_info_without_reason(_Config) ->
+    [
+        ?assertEqual({~"500", undefined, ~"500"}, crash_tags(CrashInfo, 500), CrashInfo)
+     || CrashInfo <- [unavailable, #{status_code => 500, title => ~"Error in controller"}]
+    ].
+
 plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     logger:unset_process_metadata(),
     Req = make_req(<<"GET">>, <<"/users">>),
@@ -659,9 +681,64 @@ plugin_route(Req, Env) ->
         ct:fail(timeout_waiting_for_span)
     end.
 
+%% Runs a request whose post_request sees CrashInfo and returns the span
+%% error.type, the span status message and the duration metric error.type.
+crash_tags(CrashInfo, Status) ->
+    Path = iolist_to_binary(["/crash/", integer_to_list(erlang:unique_integer([positive]))]),
+    {State0, DownReq} = start_stream(1, make_req(~"GET", Path)),
+    State1 = run_plugin(DownReq, #{}, State0),
+    {ok, _, _} = otel_nova_plugin:post_request(
+        DownReq#{crash_info => CrashInfo}, #{}, #{}, undefined
+    ),
+    State2 = forward_casts(1, State1),
+    {_Cmds, State3} = otel_nova_stream_h:info(1, {response, Status, #{}, ~"Error"}, State2),
+    otel_nova_stream_h:terminate(1, normal, State3),
+    otel_tracer_provider:force_flush(),
+    Span = receive_span(Path),
+    SpanType = maps:get('error.type', otel_nova_test_util:span_attrs(Span), undefined),
+    Message =
+        case Span#span.status of
+            #status{code = ?OTEL_STATUS_ERROR, message = M} when M =/= ~"Server error" -> M;
+            _ -> undefined
+        end,
+    otel_meter_server:force_flush(),
+    MetricType = metric_error_type(Path),
+    {SpanType, Message, MetricType}.
+
+receive_span(Path) ->
+    receive
+        {span, Span} ->
+            case otel_nova_test_util:span_attrs(Span) of
+                #{'url.path' := Path} -> Span;
+                _ -> receive_span(Path)
+            end
+    after 5000 ->
+        ct:fail({timeout_waiting_for_span, Path})
+    end.
+
+metric_error_type(Path) ->
+    receive
+        {otel_metric, #metric{name = 'http.server.request.duration', data = Data}} ->
+            #histogram{datapoints = Datapoints} = Data,
+            case
+                [
+                    maps:get('error.type', A, undefined)
+                 || #histogram_datapoint{attributes = A = #{'http.route' := P}} <- Datapoints,
+                    P =:= Path
+                ]
+            of
+                [Type] -> Type;
+                [] -> metric_error_type(Path)
+            end;
+        {otel_metric, _} ->
+            metric_error_type(Path)
+    after 5000 ->
+        ct:fail({timeout_waiting_for_metric, Path})
+    end.
+
 forward_casts(StreamID, State0) ->
     receive
-        {{_Pid, StreamID}, Msg = {otel_nova_route, _}} ->
+        {{_Pid, StreamID}, Msg = {_Tag, _Value}} ->
             {[], State} = otel_nova_stream_h:info(StreamID, Msg, State0),
             forward_casts(StreamID, State)
     after 0 ->

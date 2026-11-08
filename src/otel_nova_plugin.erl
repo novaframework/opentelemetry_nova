@@ -17,11 +17,19 @@ a catch-all such as `/assets/[...]` becomes `[...]`. When the template cannot
 be determined the attribute is left out rather than set to
 the raw path, so the number of metric series stays bounded. Instrumentation
 failures are logged without request data and never fail the request.
+
+Also register it as a `post_request` plugin. When Nova reports a controller
+or plugin crash in `crash_info`, it sets `error.type` on the server span to
+the crash reason (the reason atom, the tag of a tagged tuple, or the class),
+sets the span status to error and reports the tag to the stream handler,
+which uses it as the `error.type` metric attribute of a 5xx response.
 """.
 %% Implements nova_plugin behaviour callbacks.
 %% The -behaviour directive is omitted because nova is only a test dependency.
 
 -export([pre_request/4, post_request/4, plugin_info/0]).
+
+-include_lib("opentelemetry_api/include/opentelemetry.hrl").
 
 pre_request(Req, Env, _Opts, State) ->
     try
@@ -33,6 +41,12 @@ pre_request(Req, Env, _Opts, State) ->
     {ok, Req, State}.
 
 post_request(Req, _Env, _Opts, State) ->
+    try
+        record_crash(Req)
+    catch
+        Class:Reason:Stacktrace ->
+            otel_nova_stream_h:log_failure(post_request, Class, Reason, Stacktrace)
+    end,
     {ok, Req, State}.
 
 plugin_info() ->
@@ -48,6 +62,7 @@ plugin_info() ->
 
 instrument(Req, Env) ->
     attach_context(Req),
+    record_crash(Req),
     SpanCtx = otel_tracer:current_span_ctx(),
     case route(Req) of
         undefined ->
@@ -55,7 +70,7 @@ instrument(Req, Env) ->
         Route ->
             Method = otel_nova_http:span_method(otel_nova_http:method(cowboy_req:method(Req))),
             annotate(SpanCtx, #{'http.route' => Route}),
-            report_route(Route, Req),
+            report(otel_nova_route, Route, Req),
             rename(SpanCtx, <<Method/binary, " ", Route/binary>>)
     end,
     case extract_callback_info(Env) of
@@ -82,15 +97,49 @@ rename(SpanCtx, Name) ->
     _ = otel_span:update_name(SpanCtx, Name),
     ok.
 
+%% Nova stores `crash_info` in the Req when a controller or plugin crashes and
+%% renders a status page instead. A map with a `reason` comes from a crash; a
+%% `throw({Status, Reason})` stores the bare Reason and is not an error.
+record_crash(Req = #{crash_info := #{reason := Reason} = CrashInfo}) ->
+    Tag = error_tag(Reason, maps:get(class, CrashInfo, undefined)),
+    SpanCtx = request_span_ctx(Req),
+    annotate(SpanCtx, #{'error.type' => Tag}),
+    set_error(SpanCtx, Tag),
+    report(otel_nova_error_type, Tag, Req);
+record_crash(_Req) ->
+    ok.
+
+error_tag(Reason, _Class) when is_atom(Reason) ->
+    atom_to_binary(Reason);
+error_tag(Reason, _Class) when
+    is_tuple(Reason), tuple_size(Reason) > 0, is_atom(element(1, Reason))
+->
+    atom_to_binary(element(1, Reason));
+error_tag(_Reason, Class) when is_atom(Class), Class =/= undefined ->
+    atom_to_binary(Class);
+error_tag(_Reason, _Class) ->
+    ~"_OTHER".
+
+request_span_ctx(#{otel_nova_ctx := Ctx}) ->
+    otel_tracer:current_span_ctx(Ctx);
+request_span_ctx(_Req) ->
+    otel_tracer:current_span_ctx().
+
+set_error(undefined, _Tag) ->
+    ok;
+set_error(SpanCtx, Tag) ->
+    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Tag),
+    ok.
+
 attach_context(#{otel_nova_ctx := Ctx}) ->
     _ = otel_ctx:attach(Ctx),
     ok;
 attach_context(_Req) ->
     ok.
 
-report_route(Route, Req = #{otel_nova_ctx := _}) ->
-    cowboy_req:cast({otel_nova_route, Route}, Req);
-report_route(_Route, _Req) ->
+report(Tag, Value, Req = #{otel_nova_ctx := _}) ->
+    cowboy_req:cast({Tag, Value}, Req);
+report(_Tag, _Value, _Req) ->
     ok.
 
 enrich_logger_metadata(undefined) ->

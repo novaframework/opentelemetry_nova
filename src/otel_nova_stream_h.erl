@@ -48,7 +48,8 @@ both spans and metrics. Spans keep the sent value as
     req_start :: integer(),
     req_body_length :: non_neg_integer(),
     resp_body_length :: non_neg_integer(),
-    metric_attrs :: map()
+    metric_attrs :: map(),
+    error_type :: binary() | undefined
 }).
 
 -define(CTX_KEY, otel_nova_ctx).
@@ -77,6 +78,8 @@ data(StreamID, IsFin, Data, State0 = #state{req_body_length = Acc}) ->
     {cowboy_stream:commands(), #state{}}.
 info(_StreamID, {otel_nova_route, Route}, State) when is_binary(Route) ->
     {[], State#state{http_route = Route}};
+info(_StreamID, {otel_nova_error_type, Tag}, State) when is_binary(Tag) ->
+    {[], State#state{error_type = Tag}};
 info(StreamID, Info, State0) ->
     State = safely(info, fun() -> observe(Info, State0) end, State0),
     {Commands, Next} = cowboy_stream:info(StreamID, Info, State#state.next),
@@ -155,8 +158,8 @@ observe(_Info, State) ->
 
 finish_request(#state{span_ctx = undefined}) ->
     ok;
-finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode}) ->
-    set_status_attributes(SpanCtx, StatusCode),
+finish_request(State = #state{span_ctx = SpanCtx, status_code = StatusCode, error_type = Tag}) ->
+    set_status_attributes(SpanCtx, StatusCode, Tag),
     _ = otel_span:end_span(SpanCtx),
     safely(terminate, fun() -> end_active_request(State) end, ok),
     safely(terminate, fun() -> record_metrics(State) end, ok).
@@ -170,38 +173,49 @@ record_metrics(#state{
     req_start = ReqStart,
     req_body_length = ReqBodyLen,
     resp_body_length = RespBodyLen,
-    metric_attrs = MetricAttrs
+    metric_attrs = MetricAttrs,
+    error_type = Tag
 }) ->
     Duration =
         erlang:convert_time_unit(erlang:monotonic_time() - ReqStart, native, microsecond) / 1000000,
-    FinalAttrs = maps:merge(MetricAttrs, maps:merge(route_attrs(Route), status_attrs(StatusCode))),
+    FinalAttrs = maps:merge(
+        MetricAttrs, maps:merge(route_attrs(Route), status_attrs(StatusCode, Tag))
+    ),
     ?histogram_record('http.server.request.duration', Duration, FinalAttrs),
     record_if_positive('http.server.request.body.size', ReqBodyLen, FinalAttrs),
     record_if_positive('http.server.response.body.size', RespBodyLen, FinalAttrs),
     ok.
 
-set_status_attributes(_SpanCtx, undefined) ->
+set_status_attributes(_SpanCtx, undefined, _Tag) ->
     ok;
-set_status_attributes(SpanCtx, Code) when Code >= 500 ->
+set_status_attributes(SpanCtx, Code, Tag) when Code >= 500 ->
     _ = otel_span:set_attributes(SpanCtx, #{
         'http.response.status_code' => Code,
-        'error.type' => integer_to_binary(Code)
+        'error.type' => error_type(Code, Tag)
     }),
-    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, ~"Server error"),
+    Description =
+        case Tag of
+            undefined -> ~"Server error";
+            _ -> Tag
+        end,
+    _ = otel_span:set_status(SpanCtx, ?OTEL_STATUS_ERROR, Description),
     ok;
-set_status_attributes(SpanCtx, Code) ->
+set_status_attributes(SpanCtx, Code, _Tag) ->
     _ = otel_span:set_attribute(SpanCtx, 'http.response.status_code', Code),
     ok.
 
 route_attrs(undefined) -> #{};
 route_attrs(Route) -> #{'http.route' => Route}.
 
-status_attrs(undefined) ->
+status_attrs(undefined, _Tag) ->
     #{};
-status_attrs(Code) when Code >= 500 ->
-    #{'http.response.status_code' => Code, 'error.type' => integer_to_binary(Code)};
-status_attrs(Code) ->
+status_attrs(Code, Tag) when Code >= 500 ->
+    #{'http.response.status_code' => Code, 'error.type' => error_type(Code, Tag)};
+status_attrs(Code, _Tag) ->
     #{'http.response.status_code' => Code}.
+
+error_type(Code, undefined) -> integer_to_binary(Code);
+error_type(_Code, Tag) -> Tag.
 
 body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).
