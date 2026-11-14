@@ -672,7 +672,10 @@ event_stream_duration_is_the_stream_lifetime_by_default(_Config) ->
     {200, <<"data: first", _/binary>>} = request(?NOVA_PORT, "/nova/sse/full", []),
     Server = otel_nova_test_util:receive_span(~"/nova/sse/full"),
     ?assertEqual(~"GET /nova/sse/full", Server#span.name),
-    ?assert(duration_sum(~"/nova/sse/full") >= 0.4).
+    ?assert(duration_sum(~"/nova/sse/full") >= 0.4),
+    await_metric(
+        ~"http_server_response_body_size_bytes_sum\\{[^}]*http_route=\"/nova/sse/full\"[^}]*\\} 25\n"
+    ).
 
 event_stream_duration_can_stop_at_the_first_byte(_Config) ->
     ok = application:set_env(opentelemetry_nova, stream_duration, first_byte),
@@ -696,6 +699,13 @@ event_stream_can_be_left_out_of_the_duration(_Config) ->
     _ = otel_nova_test_util:receive_span(~"/nova/not_a_stream"),
     ?assert(duration_sum(~"/nova/not_a_stream") < 0.3),
     ?assertEqual(nomatch, duration_count(~"/nova/sse/exclude")),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"http_server_response_body_size_bytes_count\\{[^}]*http_route=\"/nova/sse/exclude\"[^}]*\\} 1\n"
+        )
+    ),
     ?assertEqual(Active, active_requests_total()).
 
 %% The option is left at its default: the controller and the handler decide

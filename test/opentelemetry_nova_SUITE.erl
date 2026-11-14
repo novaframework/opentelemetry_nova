@@ -75,6 +75,7 @@ all() ->
         metrics_error_type_in_metrics,
         metrics_active_requests,
         metrics_body_sizes,
+        stream_handler_counts_streamed_response_body,
         metrics_include_added_attributes,
         metrics_stream_duration_option_applies_to_event_streams,
         metrics_stream_duration_is_set_per_request,
@@ -1079,6 +1080,22 @@ metrics_body_sizes(_Config) ->
         ?assertEqual(byte_size(RespBody), DP#histogram_datapoint.sum),
         ?assert(DP#histogram_datapoint.count >= 1)
     end).
+
+%% cowboy_req:stream_body/3 sends {data, Pid, IsFin, Data}.
+stream_handler_counts_streamed_response_body(_Config) ->
+    ok = application:set_env(opentelemetry_nova, opt_in_attributes, ['http.response.body.size']),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"GET", ~"/streamed"), stream_opts()),
+    State = send_infos(
+        [
+            {headers, 200, #{}},
+            {data, self(), nofin, ~"12345"},
+            {data, self(), fin, {sendfile, 0, 10, "/tmp/file"}}
+        ],
+        State0
+    ),
+    otel_nova_stream_h:terminate(1, normal, State),
+    Attrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/streamed")),
+    ?assertEqual(15, maps:get('http.response.body.size', Attrs)).
 
 metrics_include_added_attributes(_Config) ->
     Req = make_req(~"POST", ~"/labelled"),

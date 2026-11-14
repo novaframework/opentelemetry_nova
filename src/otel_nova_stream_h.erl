@@ -261,6 +261,8 @@ observe({headers, Code, Headers}, State) when is_integer(Code) ->
     });
 observe({data, _IsFin, Data}, State = #state{resp_body_length = Acc}) ->
     State#state{resp_body_length = Acc + body_size(Data)};
+observe({data, _Pid, _IsFin, Data}, State = #state{resp_body_length = Acc}) ->
+    State#state{resp_body_length = Acc + body_size(Data)};
 observe({error_response, Code, _Headers, Body}, State) when is_integer(Code) ->
     State#state{status_code = Code, resp_body_length = body_size(Body)};
 observe({switch_protocol, _Headers, cowboy_http2, _ModState}, State) ->

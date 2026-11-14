@@ -45,6 +45,9 @@ before your own application in the release (or in `applications` of your
   the metrics, where it had none. Over HTTP/2 the span, the duration and
   `http.server.active_requests` now end at the handshake instead of when the
   WebSocket closes.
+- Response bodies sent with `cowboy_req:stream_body/3` are counted in
+  `http.server.response.body.size` and `http.response.body.size`. They were
+  left out, so streamed responses add series and bytes to that histogram.
 - A request without a route template, such as a 404 rendered by Nova's
   router, is named after the method alone (`GET`) instead of `HTTP GET`, as
   the semantic conventions specify. Queries and `otel_nova_sampler` entries
