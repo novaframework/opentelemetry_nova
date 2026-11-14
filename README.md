@@ -350,7 +350,8 @@ list your application's own port in another `ingress` rule as well.
 
 Each metric keeps at most 2000 series. Further attribute sets are added to one
 overflow series labelled `otel_metric_overflow="true"`. Label values that are
-not valid UTF-8 are rendered as `_INVALID_UTF8`, so the output always parses.
+not valid UTF-8 are rendered as `_INVALID_UTF8`, and a tuple or a list that is
+not a string as `_UNSUPPORTED`, so the output always parses.
 
 `opentelemetry_nova:setup(#{prometheus => #{port => 9464}})` still works and
 starts the server linked to the caller, but the supervised child is

@@ -21,6 +21,9 @@ all() ->
         label_dots_to_underscores,
         label_escaping,
         invalid_utf8_label_value,
+        list_attributes_share_the_series_of_a_map,
+        string_label_value,
+        label_value_without_a_text_form,
         delta_series_overflow,
         cumulative_series_overflow,
         cumulative_histogram_series_overflow,
@@ -279,6 +282,48 @@ invalid_utf8_label_value(_Config) ->
     Output = otel_nova_prom_exporter:get_metrics(),
     ?assertEqual(Output, unicode:characters_to_binary(Output)),
     ?assertMatch({match, _}, re:run(Output, ~"hits_total\\{method=\"_INVALID_UTF8\"\\} 1\n")).
+
+list_attributes_share_the_series_of_a_map(_Config) ->
+    [
+        ok = otel_nova_prom_exporter:export(
+            [sum_metric(hits, temporality_delta, true, [{Attrs, 1}])], undefined, #{}
+        )
+     || Attrs <- [[{method, ~"GET"}, {code, 200}], #{code => 200, method => ~"GET"}]
+    ],
+    ?assertMatch(
+        {match, _},
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"hits_total\\{code=\"200\",method=\"GET\"\\} 2\n"
+        )
+    ).
+
+string_label_value(_Config) ->
+    Metric = sum_metric(hits, temporality_delta, true, [{#{method => "GET"}, 1}]),
+    ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+    ?assertMatch(
+        {match, _},
+        re:run(otel_nova_prom_exporter:get_metrics(), ~"hits_total\\{method=\"GET\"\\} 1\n")
+    ).
+
+label_value_without_a_text_form(_Config) ->
+    [
+        begin
+            Metric = sum_metric(hits, temporality_delta, true, [{#{tags => Value}, 1}]),
+            ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+            ?assertMatch(
+                {match, _},
+                re:run(
+                    otel_nova_prom_exporter:get_metrics(),
+                    ~"hits_total\\{tags=\"_UNSUPPORTED\"\\} 1\n"
+                ),
+                Value
+            ),
+            ok = otel_nova_prom_exporter:shutdown(),
+            {ok, _} = otel_nova_prom_exporter:init(#{})
+        end
+     || Value <- [[a, b], [1.5, 2.5], [true, false], {a, b}]
+    ].
 
 delta_series_overflow(_Config) ->
     Datapoints = [{#{n => N}, 1} || N <- lists:seq(1, 2500)],

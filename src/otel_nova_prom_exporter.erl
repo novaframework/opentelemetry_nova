@@ -11,7 +11,8 @@ reader temporality.
 Each metric keeps at most 2000 series. Datapoints for further attribute sets
 are added to one overflow series labelled `otel_metric_overflow="true"`, so
 an unexpected source of label values cannot grow the table without bound.
-Label values that are not valid UTF-8 are rendered as `_INVALID_UTF8`.
+Label values that are not valid UTF-8 are rendered as `_INVALID_UTF8`, and a
+tuple or a list that is not a string as `_UNSUPPORTED`.
 
 The table is written only by the process that called `init/1`, which is the
 metric reader.
@@ -221,7 +222,9 @@ add_lists([], []) ->
 
 -spec normalize_attrs(opentelemetry:attributes_map()) -> label_attributes().
 normalize_attrs(Attrs) when is_map(Attrs) ->
-    ordsets:from_list(maps:to_list(Attrs)).
+    ordsets:from_list(maps:to_list(Attrs));
+normalize_attrs(Attrs) when is_list(Attrs) ->
+    normalize_attrs(maps:from_list(Attrs)).
 
 -spec metric_meta(binary()) -> {meta, binary()}.
 metric_meta(PromName) -> {meta, PromName}.
@@ -392,6 +395,7 @@ append_if_missing(Bin, Suffix) ->
 prom_label_name(Name) ->
     dots_to_underscores(to_bin(Name)).
 
+-spec prom_label_value(opentelemetry:attribute_value()) -> binary().
 prom_label_value(V) when is_binary(V) ->
     escape_label_value(V);
 prom_label_value(V) when is_atom(V) ->
@@ -400,8 +404,30 @@ prom_label_value(V) when is_integer(V) ->
     integer_to_binary(V);
 prom_label_value(V) when is_float(V) ->
     float_to_binary(V, [{decimals, 6}, compact]);
-prom_label_value(V) ->
-    escape_label_value(to_bin(V)).
+prom_label_value(V) when is_list(V) ->
+    case iodata_bytes(V, <<>>) of
+        unsupported -> ~"_UNSUPPORTED";
+        Bytes -> escape_label_value(Bytes)
+    end;
+prom_label_value(V) when is_tuple(V) ->
+    ~"_UNSUPPORTED".
+
+%% The bytes list_to_binary/1 gives for a string or iolist. An array of
+%% atoms, floats or integers above 255 has none.
+-spec iodata_bytes(term(), binary()) -> binary() | unsupported.
+iodata_bytes([], Acc) ->
+    Acc;
+iodata_bytes(Bin, Acc) when is_binary(Bin) ->
+    <<Acc/binary, Bin/binary>>;
+iodata_bytes([Byte | Rest], Acc) when is_integer(Byte), Byte >= 0, Byte =< 255 ->
+    iodata_bytes(Rest, <<Acc/binary, Byte>>);
+iodata_bytes([Head | Rest], Acc) ->
+    case iodata_bytes(Head, Acc) of
+        unsupported -> unsupported;
+        Bytes -> iodata_bytes(Rest, Bytes)
+    end;
+iodata_bytes(_, _) ->
+    unsupported.
 
 -spec escape_label_value(binary()) -> binary().
 escape_label_value(Bin) ->
