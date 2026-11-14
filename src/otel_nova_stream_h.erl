@@ -69,7 +69,6 @@ both spans and metrics. Spans keep the sent value as
 
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
--include_lib("opentelemetry_api_experimental/include/otel_meter.hrl").
 
 -define(CTX_KEY, otel_nova_ctx).
 
@@ -177,9 +176,7 @@ start_request(Req, State) ->
         #{kind => ?SPAN_KIND_SERVER, attributes => Attrs, links => Links}
     ),
     Ctx = otel_tracer:set_current_span(ParentCtx, SpanCtx),
-    safely(
-        init, fun() -> ?updown_counter_add('http.server.active_requests', 1, MetricAttrs) end, ok
-    ),
+    safely(init, fun() -> add_active_requests(1, MetricAttrs) end, ok),
     {Req#{?CTX_KEY => Ctx}, State#state{
         span_ctx = SpanCtx, metric_attrs = MetricAttrs, opts = Opts
     }}.
@@ -342,7 +339,13 @@ finish_request(
     safely(terminate, fun() -> end_active_request(State) end, ok).
 
 end_active_request(#state{metric_attrs = MetricAttrs}) ->
-    ?updown_counter_add('http.server.active_requests', -1, MetricAttrs).
+    add_active_requests(-1, MetricAttrs).
+
+-spec add_active_requests(1 | -1, opentelemetry:attributes_map()) -> ok | false.
+add_active_requests(Change, Attrs) ->
+    otel_updown_counter:add(
+        otel_ctx:get_current(), meter(), 'http.server.active_requests', Change, Attrs
+    ).
 
 %% The connection process has no attached context, so the server span is
 %% passed explicitly; with exemplars enabled the measurements then carry its
@@ -389,7 +392,7 @@ stream_duration(_State) ->
 record_duration(_Ctx, undefined, _Attrs) ->
     ok;
 record_duration(Ctx, Duration, Attrs) ->
-    otel_histogram:record(Ctx, ?current_meter, 'http.server.request.duration', Duration, Attrs).
+    otel_histogram:record(Ctx, meter(), 'http.server.request.duration', Duration, Attrs).
 
 set_status_attributes(_SpanCtx, undefined, _Tag) ->
     ok;
@@ -419,9 +422,16 @@ body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).
 
 record_if_positive(Ctx, Name, Value, Attrs) when Value > 0 ->
-    otel_histogram:record(Ctx, ?current_meter, Name, Value, Attrs);
+    otel_histogram:record(Ctx, meter(), Name, Value, Attrs);
 record_if_positive(_Ctx, _Name, _Value, _Attrs) ->
     ok.
+
+-spec meter() -> opentelemetry_experimental:meter().
+meter() ->
+    case opentelemetry:get_application_scope(?MODULE) of
+        undefined -> opentelemetry_experimental:get_meter();
+        Scope -> opentelemetry_experimental:get_meter(Scope)
+    end.
 
 %% erlang:raise/3 is specified to return badarg, which it does for a
 %% malformed stacktrace.

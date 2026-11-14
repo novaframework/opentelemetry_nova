@@ -6,12 +6,13 @@ OpenTelemetry instrumentation for Nova. See the README for the full setup.
 -export([setup/0, setup/1, add_metric_attributes/2, set_stream_duration/2]).
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
--include_lib("opentelemetry_api_experimental/include/otel_meter.hrl").
 
 -doc "Creates the HTTP server metric instruments. Call it once from your application's `start/2`.".
+-spec setup() -> ok.
 setup() ->
     opentelemetry:get_application_tracer(?MODULE),
-    ?create_histogram('http.server.request.duration', #{
+    Meter = meter(),
+    otel_meter:create_histogram(Meter, 'http.server.request.duration', #{
         description => <<"Duration of HTTP server requests">>,
         unit => s,
         advisory_params => #{
@@ -20,15 +21,15 @@ setup() ->
             ]
         }
     }),
-    ?create_updown_counter('http.server.active_requests', #{
+    otel_meter:create_updown_counter(Meter, 'http.server.active_requests', #{
         description => <<"Number of active HTTP server requests">>,
         unit => '{request}'
     }),
-    ?create_histogram('http.server.request.body.size', #{
+    otel_meter:create_histogram(Meter, 'http.server.request.body.size', #{
         description => <<"Size of HTTP server request bodies">>,
         unit => 'By'
     }),
-    ?create_histogram('http.server.response.body.size', #{
+    otel_meter:create_histogram(Meter, 'http.server.response.body.size', #{
         description => <<"Size of HTTP server response bodies">>,
         unit => 'By'
     }),
@@ -99,3 +100,10 @@ set_stream_duration(Req = #{otel_nova_ctx := _}, Mode) when
     cowboy_req:cast({otel_nova_stream_duration, Mode}, Req);
 set_stream_duration(_Req, Mode) when Mode =:= full; Mode =:= first_byte; Mode =:= exclude ->
     ok.
+
+-spec meter() -> opentelemetry_experimental:meter().
+meter() ->
+    case opentelemetry:get_application_scope(?MODULE) of
+        undefined -> opentelemetry_experimental:get_meter();
+        Scope -> opentelemetry_experimental:get_meter(Scope)
+    end.
