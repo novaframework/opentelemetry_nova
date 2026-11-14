@@ -27,7 +27,14 @@
     response_headers_are_captured/1,
     controller_adds_metric_attributes/1,
     route_template_from_nova_names_span_and_metric/1,
-    unrouted_request_is_named_after_the_method/1
+    unrouted_request_is_named_after_the_method/1,
+    malformed_request_line_is_counted/1,
+    oversized_request_line_is_counted/1,
+    oversized_header_is_counted_with_its_method/1,
+    slow_request_headers_are_counted/1,
+    unsupported_version_is_counted_as_server_error/1,
+    early_errors_leave_active_requests_untouched/1,
+    stream_init_failure_does_not_leak_active_requests/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -38,7 +45,11 @@
 -define(HTTP_PORT, 58607).
 -define(METRICS_PORT, 58617).
 -define(NOVA_PORT, 58627).
+-define(EARLY_PORT, 58637).
+-define(CRASH_PORT, 58647).
 -define(LISTENER, otel_nova_integration_http).
+-define(EARLY_LISTENER, otel_nova_integration_early).
+-define(CRASH_LISTENER, otel_nova_integration_crash).
 -define(NOVA_LISTENER, otel_nova_integration_nova).
 -define(COOKIE, "session=s3cr3t-cookie-value").
 -define(SAMPLE_LINE,
@@ -70,7 +81,14 @@ all() ->
         response_headers_are_captured,
         controller_adds_metric_attributes,
         route_template_from_nova_names_span_and_metric,
-        unrouted_request_is_named_after_the_method
+        unrouted_request_is_named_after_the_method,
+        malformed_request_line_is_counted,
+        oversized_request_line_is_counted,
+        oversized_header_is_counted_with_its_method,
+        slow_request_headers_are_counted,
+        unsupported_version_is_counted_as_server_error,
+        early_errors_leave_active_requests_untouched,
+        stream_init_failure_does_not_leak_active_requests
     ].
 
 init_per_suite(Config) ->
@@ -104,6 +122,14 @@ init_per_suite(Config) ->
             nova_plugin_handler
         ]
     }),
+    {ok, _} = cowboy:start_clear(?EARLY_LISTENER, [{port, ?EARLY_PORT}], #{
+        stream_handlers => [otel_nova_stream_h, cowboy_stream_h],
+        middlewares => [otel_nova_test_router, nova_plugin_handler, otel_nova_test_handler],
+        request_timeout => 300
+    }),
+    {ok, _} = cowboy:start_clear(?CRASH_LISTENER, [{port, ?CRASH_PORT}], #{
+        stream_handlers => [otel_nova_stream_h, crashing_stream_h]
+    }),
     [
         {plugin_manager, PluginManager},
         {nova_handlers, Handlers},
@@ -114,6 +140,8 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     ok = cowboy:stop_listener(?LISTENER),
     ok = cowboy:stop_listener(?NOVA_LISTENER),
+    ok = cowboy:stop_listener(?EARLY_LISTENER),
+    ok = cowboy:stop_listener(?CRASH_LISTENER),
     persistent_term:erase(nova_dispatch),
     gen_server:stop(?config(nova_handlers, Config)),
     gen_server:stop(?config(plugin_manager, Config)),
@@ -439,9 +467,185 @@ unrouted_request_is_named_after_the_method(_Config) ->
     ),
     ?assertEqual(nomatch, binary:match(otel_nova_prom_exporter:get_metrics(), ~"a1b2c3")).
 
+malformed_request_line_is_counted(_Config) ->
+    Series = early_error_series(~"_OTHER", 400),
+    Before = metric_value(Series),
+    {ok, <<"HTTP/1.1 400 ", _/binary>>} = raw(?EARLY_PORT, "NOTAREQUEST-7f3a\r\n\r\n"),
+    Span = receive_early_error_span(400),
+    ?assertEqual(~"HTTP", Span#span.name),
+    ?assertEqual(server, Span#span.kind),
+    ?assertEqual(undefined, Span#span.parent_span_id),
+    Attrs = otel_nova_test_util:span_attrs(Span),
+    ?assertEqual(~"_OTHER", maps:get('http.request.method', Attrs)),
+    ?assertEqual(~"connection_error", maps:get('error.type', Attrs)),
+    ?assertEqual(~"127.0.0.1", maps:get('network.peer.address', Attrs)),
+    ?assertEqual(~"127.0.0.1", maps:get('client.address', Attrs)),
+    ?assertNot(maps:is_key('http.request.method_original', Attrs)),
+    ?assertNot(maps:is_key('url.path', Attrs)),
+    ?assertNot(maps:is_key('http.route', Attrs)),
+    ?assertNotMatch(#status{code = ?OTEL_STATUS_ERROR}, Span#span.status),
+    ?assertEqual(Before + 1, await_metric_value(Series, Before + 1)),
+    ?assertEqual(nomatch, binary:match(otel_nova_prom_exporter:get_metrics(), ~"NOTAREQUEST")).
+
+%% Cowboy rejects the line before it has parsed the method.
+oversized_request_line_is_counted(_Config) ->
+    Series = early_error_series(~"_OTHER", 414),
+    Before = metric_value(Series),
+    Target = binary:copy(~"longtarget", 900),
+    {ok, <<"HTTP/1.1 414 ", _/binary>>} = raw(?EARLY_PORT, [
+        "GET /", Target, " HTTP/1.1\r\nhost: early.test\r\n\r\n"
+    ]),
+    Span = receive_early_error_span(414),
+    ?assertEqual(~"HTTP", Span#span.name),
+    ?assertEqual(Before + 1, await_metric_value(Series, Before + 1)),
+    ?assertEqual(nomatch, binary:match(otel_nova_prom_exporter:get_metrics(), ~"longtarget")).
+
+oversized_header_is_counted_with_its_method(_Config) ->
+    Series = early_error_series(~"GET", 431),
+    Before = metric_value(Series),
+    {ok, <<"HTTP/1.1 431 ", _/binary>>} = raw(?EARLY_PORT, [
+        "GET /early/too-large?probe=1 HTTP/1.1\r\nhost: early.test\r\n",
+        ["x-big: ", binary:copy(~"b", 5000), "\r\n\r\n"]
+    ]),
+    Span = otel_nova_test_util:receive_span(~"/early/too-large"),
+    ?assertEqual(~"GET", Span#span.name),
+    Attrs = otel_nova_test_util:span_attrs(Span),
+    ?assertEqual(~"GET", maps:get('http.request.method', Attrs)),
+    ?assertEqual(431, maps:get('http.response.status_code', Attrs)),
+    ?assertEqual(~"connection_error", maps:get('error.type', Attrs)),
+    ?assertEqual(~"1.1", maps:get('network.protocol.version', Attrs)),
+    ?assertEqual(#{}, otel_nova_test_util:binary_keys(Attrs)),
+    ?assertNot(maps:is_key('url.query', Attrs)),
+    ?assertEqual(Before + 1, await_metric_value(Series, Before + 1)),
+    Metrics = otel_nova_prom_exporter:get_metrics(),
+    ?assertEqual(nomatch, binary:match(Metrics, ~"too-large")),
+    ?assertEqual(nomatch, binary:match(Metrics, ~"early.test")).
+
+slow_request_headers_are_counted(_Config) ->
+    Series = early_error_series(~"GET", 408),
+    Before = metric_value(Series),
+    {ok, <<"HTTP/1.1 408 ", _/binary>>} = raw(
+        ?EARLY_PORT, "GET /early/slow HTTP/1.1\r\nhost: early.test\r\n"
+    ),
+    Span = otel_nova_test_util:receive_span(~"/early/slow"),
+    Attrs = otel_nova_test_util:span_attrs(Span),
+    ?assertEqual(408, maps:get('http.response.status_code', Attrs)),
+    ?assertEqual(Before + 1, await_metric_value(Series, Before + 1)).
+
+unsupported_version_is_counted_as_server_error(_Config) ->
+    Series = early_error_series(~"_OTHER", 505),
+    Before = metric_value(Series),
+    {ok, <<"HTTP/1.1 505 ", _/binary>>} = raw(?EARLY_PORT, "GET /early/version HTTP/9.9\r\n\r\n"),
+    Span = receive_early_error_span(505),
+    ?assertMatch(
+        #status{code = ?OTEL_STATUS_ERROR, message = ~"connection_error"}, Span#span.status
+    ),
+    ?assertEqual(Before + 1, await_metric_value(Series, Before + 1)).
+
+%% An early error has no stream, so nothing was added to the gauge and
+%% nothing may be taken from it.
+early_errors_leave_active_requests_untouched(_Config) ->
+    Before = [active_requests_total(), metric_value(early_error_series(~"_OTHER", 400))],
+    [
+        {ok, <<"HTTP/1.1 400 ", _/binary>>} = raw(?EARLY_PORT, "BROKEN\r\n\r\n")
+     || _ <- lists:seq(1, 20)
+    ],
+    _ = receive_spans(20),
+    Series = early_error_series(~"_OTHER", 400),
+    ?assertEqual(lists:last(Before) + 20, await_metric_value(Series, lists:last(Before) + 20)),
+    ?assertEqual(hd(Before), active_requests_total()),
+    ?assertNotMatch(
+        {match, _},
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"http_server_active_requests\\{[^}]*\\} -"
+        )
+    ).
+
+%% Cowboy never calls terminate/3 for a stream whose handlers failed to
+%% start. Over HTTP/1.1 it answers 500 through early_error/5, which must not
+%% count the request a second time.
+stream_init_failure_does_not_leak_active_requests(_Config) ->
+    ok = application:set_env(opentelemetry_nova, metric_server_hosts, [~"localhost"]),
+    Series =
+        ~"http_server_request_duration_seconds_count\\{error_type=\"internal_error\",http_request_method=\"GET\",server_address=\"localhost\",server_port=\"58647\",url_scheme=\"http\"\\} ",
+    Before = metric_value(Series),
+    {500, _} = request(?CRASH_PORT, "/early/init-crash", []),
+    Span = otel_nova_test_util:receive_span(~"/early/init-crash"),
+    Attrs = otel_nova_test_util:span_attrs(Span),
+    ?assertEqual(~"internal_error", maps:get('error.type', Attrs)),
+    ?assertMatch(#status{code = ?OTEL_STATUS_ERROR}, Span#span.status),
+    ?assertEqual(Before + 1, await_metric_value(Series, Before + 1)),
+    ?assertEqual(
+        nomatch,
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"http_server_request_duration_seconds_count\\{[^}]*http_response_status_code=\"500\"[^}]*server_port=\"58647\""
+        )
+    ),
+    ?assertMatch(
+        {match, _},
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"http_server_active_requests\\{[^}]*server_port=\"58647\"[^}]*\\} 0\n"
+        )
+    ).
+
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
+
+early_error_series(Method, Status) ->
+    <<"http_server_request_duration_seconds_count\\{error_type=\"connection_error\",http_request_method=\"",
+        Method/binary, "\",http_response_status_code=\"", (integer_to_binary(Status))/binary,
+        "\"\\} ">>.
+
+metric_value(Series) ->
+    otel_meter_server:force_flush(),
+    case
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            <<Series/binary, "([0-9]+)\n">>,
+            [{capture, [1], binary}]
+        )
+    of
+        {match, [Value]} -> binary_to_integer(Value);
+        nomatch -> 0
+    end.
+
+await_metric_value(Series, Expected) ->
+    await_metric(<<Series/binary, (integer_to_binary(Expected))/binary, "\n">>),
+    metric_value(Series).
+
+active_requests_total() ->
+    otel_meter_server:force_flush(),
+    case
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"http_server_active_requests\\{[^}]*\\} (-?[0-9]+)\n",
+            [global, {capture, [1], binary}]
+        )
+    of
+        {match, Values} -> lists:sum([binary_to_integer(Value) || [Value] <- Values]);
+        nomatch -> 0
+    end.
+
+receive_early_error_span(Status) ->
+    receive_early_error_span(Status, 50).
+
+receive_early_error_span(Status, 0) ->
+    ct:fail({timeout_waiting_for_early_error_span, Status});
+receive_early_error_span(Status, Attempts) ->
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} ->
+            case otel_nova_test_util:span_attrs(Span) of
+                #{'http.response.status_code' := Status, 'error.type' := _} -> Span;
+                _ -> receive_early_error_span(Status, Attempts)
+            end
+    after 100 ->
+        receive_early_error_span(Status, Attempts - 1)
+    end.
 
 assert_crash_tagged(Path, Tag) ->
     {500, _} = request(?NOVA_PORT, Path, []),
@@ -475,7 +679,10 @@ without_start_time(State) ->
     setelement(ReqStartField, State, undefined).
 
 raw(Request) ->
-    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?HTTP_PORT, [binary, {active, false}]),
+    raw(?HTTP_PORT, Request).
+
+raw(Port, Request) ->
+    {ok, Socket} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}]),
     ok = gen_tcp:send(Socket, Request),
     Result = gen_tcp:recv(Socket, 0, 2000),
     ok = gen_tcp:close(Socket),

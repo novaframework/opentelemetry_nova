@@ -36,6 +36,11 @@ before your own application in the release (or in `applications` of your
   `badmatch`, ...) instead of `500` on spans and metrics. A stream that ends
   without a response has the Cowboy reason (`socket_error`, ...). Alerts that
   match `error_type="500"` need updating.
+- Requests Cowboy rejects before it creates a request (400, 408, 414, 431,
+  501, 505) are now traced and counted in `http.server.request.duration`, with
+  `error.type` set and no `url.scheme` (see
+  [Rejected requests](#rejected-requests)). Totals over that histogram rise by
+  the number of such requests.
 - A request without a route template, such as a 404 rendered by Nova's
   router, is named after the method alone (`GET`) instead of `HTTP GET`, as
   the semantic conventions specify. Queries and `otel_nova_sampler` entries
@@ -371,7 +376,7 @@ Server spans are created for every HTTP request with the following attributes:
 | `http.response.body.size` | Response body bytes sent, set when the span ends (opt-in) |
 | `http.request.header.<name>` | Request headers listed in `request_headers` |
 | `http.response.header.<name>` | Response headers listed in `response_headers` |
-| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors, or the Cowboy reason (`socket_error`, ...) when the stream ends without a response |
+| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors, or the Cowboy reason (`socket_error`, ...) when the stream ends without a response or Cowboy rejects the request |
 | `nova.app` | Nova application name |
 | `nova.controller` | Controller module |
 | `nova.action` | Action function |
@@ -448,6 +453,43 @@ closed the connection or the request timed out, gets `error.type` set to the
 tag of the reason Cowboy reports (`socket_error`, `internal_error`,
 `stream_error`, `connection_error`, `stop`) on the span and the metrics, and
 an error span status. Its duration is still recorded.
+
+A request Cowboy rejects before it reaches Nova is covered in
+[Rejected requests](#rejected-requests).
+
+## Rejected requests
+
+Cowboy answers a request it cannot parse (malformed request line, oversized
+request line or headers, headers that arrive too slowly, unsupported method or
+version) with a 400, 408, 414, 431, 501 or 505 before a request exists. Each
+one is recorded:
+
+- `http.server.request.duration` gets one measurement with
+  `http.request.method`, `http.response.status_code` and `error.type`, and no
+  other attribute: the scheme, host and route of such a request are unknown,
+  and nothing else from the request line or the headers becomes a label. The
+  method is the parsed method, normalised as usual, or `_OTHER` when Cowboy
+  rejected the request before it had a method (a bad or oversized request
+  line). `error.type` is the tag of the reason Cowboy gives
+  (`connection_error`, `stream_error`), also for a 4xx. The value is the time
+  spent answering, close to zero.
+- A server span named after the method (`GET`, or `HTTP` without one) is
+  started and ended at once. It is always a root span: the headers of a
+  rejected request are not used for trace context. Its attributes are
+  `http.request.method`, `http.request.method_original`,
+  `http.response.status_code`, `error.type`, the peer address and port,
+  `client.address` (the peer), and `url.path` and `network.protocol.version`
+  when Cowboy had parsed the request line. Headers and the query string are
+  not recorded. The span status is error for a 5xx only. `otel_nova_sampler`
+  entries match these spans by method and path when Cowboy had parsed the
+  request line. The entry `~"HTTP"` drops the ones without a method, together
+  with every request whose method is `_OTHER`.
+- `http.server.active_requests` and the body size histograms are not touched.
+
+Over HTTP/1.1, the 500 Cowboy sends when a stream handler after
+`otel_nova_stream_h` fails to start is recorded once, as a stream that ended
+without a response: `error.type` is `internal_error` and there is no status
+code.
 
 ## Metrics
 

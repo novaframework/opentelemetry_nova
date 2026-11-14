@@ -13,6 +13,13 @@ Instrumentation failures are logged without request data and never crash the
 stream, and the server span is started even when building its attributes
 fails.
 
+A request Cowboy rejects before it creates a stream (a malformed or oversized
+request line or header block, headers that arrive too slowly) reaches
+`early_error/5` only. It is recorded as one `http.server.request.duration`
+measurement with the normalised method (`_OTHER` when none was parsed), the
+status code and `error.type`, and as a root server span without header or
+query attributes. `http.server.active_requests` is not touched.
+
 Options, read from the `opentelemetry_nova` application environment:
 
 * `trust_forwarded_for` (default `false`): take `client.address` from the
@@ -84,8 +91,14 @@ init(StreamID, Req, Opts) ->
         extra_metric_attrs = #{}
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
-    {Commands, Next} = cowboy_stream:init(StreamID, Req1, Opts),
-    {Commands, State#state{next = Next}}.
+    try cowboy_stream:init(StreamID, Req1, Opts) of
+        {Commands, Next} ->
+            {Commands, State#state{next = Next}}
+    catch
+        Class:Reason:Stacktrace ->
+            safely(init, fun() -> finish_request(stream_failure(internal_error, State)) end, ok),
+            erlang:raise(Class, Reason, Stacktrace)
+    end.
 
 -spec data(cowboy_stream:streamid(), cowboy_stream:fin(), binary(), #state{}) ->
     {cowboy_stream:commands(), #state{}}.
@@ -121,8 +134,11 @@ terminate(StreamID, Reason, State = #state{next = Next}) ->
     cowboy:opts()
 ) -> Resp when
     Resp :: cowboy_stream:resp_command().
-early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
-    cowboy_stream:early_error(StreamID, Reason, PartialReq, Resp, Opts).
+early_error(StreamID, Reason, PartialReq, Resp0, Opts) ->
+    Start = erlang:monotonic_time(),
+    Resp = cowboy_stream:early_error(StreamID, Reason, PartialReq, Resp0, Opts),
+    safely(early_error, fun() -> record_early_error(Reason, PartialReq, Resp, Start) end, ok),
+    Resp.
 
 %% Internal
 
@@ -147,6 +163,46 @@ start_request(Req, State) ->
     {Req#{?CTX_KEY => Ctx}, State#state{
         span_ctx = SpanCtx, metric_attrs = MetricAttrs, opts = Opts
     }}.
+
+%% Cowboy answers a request it cannot parse without creating a stream, so
+%% init/3 and terminate/3 never run and http.server.active_requests is not
+%% touched. The span is a root: the headers of such a request are not trusted
+%% for trace context. An internal_error is the 500 Cowboy sends over HTTP/1.1
+%% after a stream handler's init/3 raised, which init/3 has already recorded.
+record_early_error({internal_error, _, _}, _PartialReq, _Resp, _Start) ->
+    ok;
+record_early_error(Reason, PartialReq, {response, Status, _Headers, _Body}, Start) ->
+    Method = otel_nova_http:method(maps:get(method, PartialReq, ~"_OTHER")),
+    Tag = stream_failure_tag(Reason),
+    StatusCode =
+        case Status of
+            _ when is_integer(Status) -> Status;
+            _ -> undefined
+        end,
+    SpanCtx = otel_tracer:start_span(
+        otel_ctx:new(),
+        ?current_tracer,
+        otel_nova_http:span_method(Method),
+        #{
+            kind => ?SPAN_KIND_SERVER,
+            attributes => otel_nova_attributes:early_error_span(PartialReq, Method)
+        }
+    ),
+    _ = otel_span:set_attribute(SpanCtx, 'error.type', Tag),
+    set_status_attributes(SpanCtx, StatusCode, Tag),
+    Ctx = otel_tracer:set_current_span(otel_ctx:new(), SpanCtx),
+    Attrs = otel_nova_attributes:early_error_metric(Method, StatusCode, Tag),
+    safely(
+        early_error,
+        fun() ->
+            otel_histogram:record(
+                Ctx, ?current_meter, 'http.server.request.duration', seconds_since(Start), Attrs
+            )
+        end,
+        ok
+    ),
+    _ = otel_span:end_span(SpanCtx),
+    ok.
 
 %% With trust_incoming_context disabled the server span is a new root, so a
 %% client cannot force sampling or inject baggage, and the remote parent is
@@ -262,8 +318,7 @@ record_metrics(#state{
     error_type = Tag,
     extra_metric_attrs = Extra
 }) ->
-    Duration =
-        erlang:convert_time_unit(erlang:monotonic_time() - ReqStart, native, microsecond) / 1000000,
+    Duration = seconds_since(ReqStart),
     Attrs = otel_nova_attributes:final_metric(MetricAttrs, Route, StatusCode, Tag, Extra),
     Ctx = otel_tracer:set_current_span(otel_ctx:new(), SpanCtx),
     otel_histogram:record(Ctx, ?current_meter, 'http.server.request.duration', Duration, Attrs),
@@ -288,6 +343,9 @@ set_status_attributes(SpanCtx, Code, Tag) when Code >= 500 ->
 set_status_attributes(SpanCtx, Code, _Tag) ->
     _ = otel_span:set_attribute(SpanCtx, 'http.response.status_code', Code),
     ok.
+
+seconds_since(Start) ->
+    erlang:convert_time_unit(erlang:monotonic_time() - Start, native, microsecond) / 1000000.
 
 body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).

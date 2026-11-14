@@ -28,7 +28,8 @@ all() ->
         map_config_delegates_to_sampler,
         description_includes_delegate,
         trust_callback_decides_per_request,
-        crashing_trust_callback_does_not_trust
+        crashing_trust_callback_does_not_trust,
+        rejected_request_follows_exclusions_and_ignores_traceparent
     ].
 
 init_per_suite(Config) ->
@@ -194,6 +195,36 @@ crashing_trust_callback_does_not_trust(_Config) ->
             "true"
         ]
     ].
+
+rejected_request_follows_exclusions_and_ignores_traceparent(_Config) ->
+    Resp = {response, 431, #{}, <<>>},
+    reject(~"/metrics", Resp),
+    receive
+        {span, #span{} = Excluded} -> ct:fail({should_not_sample, Excluded})
+    after 200 ->
+        ok
+    end,
+    reject(~"/users", Resp),
+    receive
+        {span, #span{trace_id = TraceId, parent_span_id = ParentId}} ->
+            ?assertNotEqual(?TRACE_ID, TraceId),
+            ?assertEqual(undefined, ParentId)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+reject(Path, Resp) ->
+    PartialReq = #{
+        ref => otel_nova_test,
+        peer => {{127, 0, 0, 1}, 12345},
+        method => ~"GET",
+        path => Path,
+        qs => ~"",
+        version => 'HTTP/1.1',
+        headers => #{~"traceparent" => ?TRACEPARENT}
+    },
+    Reason = {connection_error, limit_reached, 'A header value is too large.'},
+    Resp = otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []}).
 
 decide(Sampler, Path) ->
     otel_sampler:should_sample(

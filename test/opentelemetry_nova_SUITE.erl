@@ -49,6 +49,9 @@ all() ->
         stream_handler_captures_response_headers,
         stream_handler_sets_opt_in_attributes,
         stream_handler_ignores_failure_after_response,
+        early_error_records_span_and_duration,
+        early_error_reports_the_response_downstream_handlers_return,
+        early_error_ignores_failed_stream_init,
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
@@ -572,6 +575,92 @@ stream_handler_ignores_failure_after_response(_Config) ->
             otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/no-response"))
         )
     ).
+
+early_error_records_span_and_duration(_Config) ->
+    PartialReq = #{
+        ref => otel_nova_test,
+        peer => {{127, 0, 0, 1}, 4711},
+        method => ~"PROPFIND",
+        path => ~"/early/unit",
+        qs => ~"token=s3cr3t",
+        version => 'HTTP/1.1',
+        headers => #{~"cookie" => ~"s3cr3t"}
+    },
+    Resp = {response, 431, #{~"content-length" => ~"0"}, <<>>},
+    Reason = {connection_error, limit_reached, 'A header value is too large.'},
+    ?assertEqual(
+        Resp, otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []})
+    ),
+    Span = otel_nova_test_util:receive_span(~"/early/unit"),
+    ?assertEqual(~"HTTP", Span#span.name),
+    ?assertEqual(?SPAN_KIND_SERVER, Span#span.kind),
+    ?assertEqual(
+        #{
+            'http.request.method' => ~"_OTHER",
+            'http.request.method_original' => ~"PROPFIND",
+            'http.response.status_code' => 431,
+            'error.type' => ~"connection_error",
+            'url.path' => ~"/early/unit",
+            'network.protocol.version' => ~"1.1",
+            'network.peer.address' => ~"127.0.0.1",
+            'network.peer.port' => 4711,
+            'client.address' => ~"127.0.0.1"
+        },
+        otel_nova_test_util:span_attrs(Span)
+    ),
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        Expected = #{
+            'http.request.method' => ~"_OTHER",
+            'http.response.status_code' => 431,
+            'error.type' => ~"connection_error"
+        },
+        [DP] = [DP || DP = #histogram_datapoint{attributes = A} <- Datapoints, A =:= Expected],
+        ?assertEqual(1, DP#histogram_datapoint.count)
+    end),
+    ?assertReceiveMetric('http.server.active_requests', fun(#metric{data = Data}) ->
+        #sum{datapoints = Datapoints} = Data,
+        ?assertEqual([], [V || #datapoint{value = V} <- Datapoints, V =/= 0])
+    end).
+
+early_error_reports_the_response_downstream_handlers_return(_Config) ->
+    PartialReq = #{ref => otel_nova_test, peer => {{127, 0, 0, 1}, 4712}},
+    Reason = {stream_error, protocol_error, 'Malformed request.'},
+    ?assertEqual(
+        {response, 499, #{}, <<>>},
+        otel_nova_stream_h:early_error(1, Reason, PartialReq, {response, 400, #{}, <<>>}, #{
+            stream_handlers => [early_error_rewrite_h]
+        })
+    ),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} ->
+            ?assertMatch(
+                #{'http.response.status_code' := 499, 'error.type' := ~"stream_error"},
+                otel_nova_test_util:span_attrs(Span)
+            )
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+%% The 500 Cowboy sends over HTTP/1.1 when a stream handler's init/3 raised;
+%% init/3 has recorded that request already.
+early_error_ignores_failed_stream_init(_Config) ->
+    Resp = {response, 500, #{}, <<>>},
+    Reason = {internal_error, {error, boom}, 'Unhandled exception in cowboy_stream:init/3.'},
+    ?assertEqual(
+        Resp,
+        otel_nova_stream_h:early_error(1, Reason, make_req(~"GET", ~"/early/init"), Resp, #{
+            stream_handlers => []
+        })
+    ),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} -> ct:fail({unexpected_span, Span})
+    after 300 ->
+        ok
+    end.
 
 stream_handler_ends_span_on_auth_rejection(_Config) ->
     %% Simulates what happens when nova_security_handler returns {stop, Req}:
