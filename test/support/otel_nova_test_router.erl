@@ -3,6 +3,19 @@
 
 -export([execute/2]).
 
+execute(Req = #{path := <<"/unrouted/", _/binary>>}, Env) ->
+    nova_router:execute(Req, Env);
+execute(Req = #{path := <<"/nova/templated/", _/binary>>}, Env) ->
+    Plugins = [
+        {pre_request, [{fun otel_nova_plugin:pre_request/4, #{}}]},
+        {post_request, [{fun otel_nova_plugin:post_request/4, #{}}]}
+    ],
+    {ok, Req#{plugins => Plugins, nova_route => ~"/nova/templated/:id"}, Env#{
+        app => test_app,
+        callback => fun otel_nova_test_controller:ok/1,
+        secure => false,
+        controller_data => #{}
+    }};
 execute(Req = #{path := <<"/nova/", Action/binary>>}, Env) ->
     CrashPlugin = [
         {fun otel_nova_test_controller:crash_plugin/4, #{}}

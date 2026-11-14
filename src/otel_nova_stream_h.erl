@@ -137,7 +137,7 @@ start_request(Req, State) ->
     SpanCtx = otel_tracer:start_span(
         ParentCtx,
         ?current_tracer,
-        span_name(Method),
+        otel_nova_http:span_method(Method),
         #{kind => ?SPAN_KIND_SERVER, attributes => Attrs, links => Links}
     ),
     Ctx = otel_tracer:set_current_span(ParentCtx, SpanCtx),
@@ -147,9 +147,6 @@ start_request(Req, State) ->
     {Req#{?CTX_KEY => Ctx}, State#state{
         span_ctx = SpanCtx, metric_attrs = MetricAttrs, opts = Opts
     }}.
-
-span_name(~"_OTHER") -> ~"HTTP";
-span_name(Method) -> <<"HTTP ", Method/binary>>.
 
 %% With trust_incoming_context disabled the server span is a new root, so a
 %% client cannot force sampling or inject baggage, and the remote parent is

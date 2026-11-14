@@ -36,6 +36,10 @@ before your own application in the release (or in `applications` of your
   `badmatch`, ...) instead of `500` on spans and metrics. A stream that ends
   without a response has the Cowboy reason (`socket_error`, ...). Alerts that
   match `error_type="500"` need updating.
+- A request without a route template, such as a 404 rendered by Nova's
+  router, is named after the method alone (`GET`) instead of `HTTP GET`, as
+  the semantic conventions specify. Queries and `otel_nova_sampler` entries
+  that match the span name `HTTP GET` need updating.
 
 ## Upgrading from 0.4
 
@@ -372,15 +376,17 @@ Server spans are created for every HTTP request with the following attributes:
 | `nova.controller` | Controller module |
 | `nova.action` | Action function |
 
-Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
-For an `_OTHER` method the method part is `HTTP`. Set `span_name_formatter` to
-name spans differently. Keep the names low-cardinality.
+Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`),
+or `{METHOD}` alone when there is no route template. For an `_OTHER` method
+the method part is `HTTP`. Set `span_name_formatter` to name spans
+differently. Keep the names low-cardinality.
 
 `http.route` is the route template, never the raw path. Bound segments become
 `:name`, and the tail matched by a catch-all route, including Nova static
 routes such as `/assets/[...]`, becomes `[...]`, so every file under `/assets`
-shares one label. When the template cannot be determined, `http.route` is left
-out and the span keeps the name `HTTP {METHOD}`. This keeps the number of metric
+shares one label. When the template cannot be determined, or no route
+matched and Nova's router rendered the 404 or 405 itself, `http.route` is left
+out and the span keeps the name `{METHOD}`. This keeps the number of metric
 series bounded by the route table.
 
 Notes:
@@ -388,10 +394,12 @@ Notes:
 - `client.address` uses a forwarding header only when
   `trust_forwarded_for` is enabled, and only when the address in it is a valid
   IP address. See [Options](#4-options).
-- `http.route` is taken from the `nova_route` key that newer Nova versions
-  put in the Req. With older Nova versions it is rebuilt from the request path
-  and the binding values. The rebuilt label is wrong for two kinds of path: a literal segment equal to a binding value (`/users/users`
-  on `/users/:id` becomes `/:id/:id`), and two bindings with the same value
+- `http.route` is taken from the `nova_route` key that Nova versions which
+  expose the matched route template put in the Req. With other Nova versions
+  it is rebuilt from the request path and the binding values. The rebuilt
+  label is wrong for two kinds of path: a literal segment equal to a binding
+  value (`/users/users` on `/users/:id` becomes `/:id/:id`), and two bindings
+  with the same value
   (`/teams/7/users/7` on `/teams/:team/users/:user` shows one of the two names
   in both places). The labels stay bounded; only their text is wrong.
 - The trace context is not detached on a WebSocket upgrade. This is harmless.

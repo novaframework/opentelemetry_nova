@@ -25,7 +25,9 @@
     plugin_crash_sets_error_type/1,
     security_crash_keeps_status_error_type/1,
     response_headers_are_captured/1,
-    controller_adds_metric_attributes/1
+    controller_adds_metric_attributes/1,
+    route_template_from_nova_names_span_and_metric/1,
+    unrouted_request_is_named_after_the_method/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -66,7 +68,9 @@ all() ->
         plugin_crash_sets_error_type,
         security_crash_keeps_status_error_type,
         response_headers_are_captured,
-        controller_adds_metric_attributes
+        controller_adds_metric_attributes,
+        route_template_from_nova_names_span_and_metric,
+        unrouted_request_is_named_after_the_method
     ].
 
 init_per_suite(Config) ->
@@ -407,6 +411,33 @@ controller_adds_metric_attributes(_Config) ->
     Metrics = otel_nova_prom_exporter:get_metrics(),
     ?assertEqual(nomatch, binary:match(Metrics, ~"/overridden")),
     ?assertNotMatch({match, _}, re:run(Metrics, ~"http_server_active_requests\\{[^}]*tenant=")).
+
+%% The test router puts the template under nova_route, the way a Nova
+%% router that exposes the matched route does; no bindings are set, so the
+%% template cannot come from the request path.
+route_template_from_nova_names_span_and_metric(_Config) ->
+    {200, _} = request(?NOVA_PORT, "/nova/templated/42", []),
+    Server = otel_nova_test_util:receive_span(~"/nova/templated/42"),
+    ?assertEqual(~"GET /nova/templated/:id", Server#span.name),
+    Attrs = otel_nova_test_util:span_attrs(Server),
+    ?assertEqual(~"/nova/templated/:id", maps:get('http.route', Attrs)),
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{[^}]*http_route=\"/nova/templated/:id\"[^}]*\\} 1"
+    ),
+    ?assertEqual(nomatch, binary:match(otel_nova_prom_exporter:get_metrics(), ~"templated/42")).
+
+%% Nova's router renders the 404 itself and runs no plugins.
+unrouted_request_is_named_after_the_method(_Config) ->
+    {404, _} = request(?NOVA_PORT, "/unrouted/a1b2c3", []),
+    Server = otel_nova_test_util:receive_span(~"/unrouted/a1b2c3"),
+    ?assertEqual(~"GET", Server#span.name),
+    Attrs = otel_nova_test_util:span_attrs(Server),
+    ?assertNot(maps:is_key('http.route', Attrs)),
+    ?assertEqual(404, maps:get('http.response.status_code', Attrs)),
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{http_request_method=\"GET\",http_response_status_code=\"404\",url_scheme=\"http\"\\} "
+    ),
+    ?assertEqual(nomatch, binary:match(otel_nova_prom_exporter:get_metrics(), ~"a1b2c3")).
 
 %%--------------------------------------------------------------------
 %% Helpers

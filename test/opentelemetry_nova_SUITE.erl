@@ -129,7 +129,7 @@ stream_handler_creates_span(_Config) ->
 
     receive
         {span, Span = #span{name = Name}} ->
-            ?assertEqual(<<"HTTP GET">>, Name),
+            ?assertEqual(<<"GET">>, Name),
             Attrs = otel_nova_test_util:span_attrs(Span),
             ?assertEqual(<<"GET">>, maps:get('http.request.method', Attrs)),
             ?assertEqual(<<"/users">>, maps:get('url.path', Attrs)),
@@ -1118,7 +1118,7 @@ plugin_route(Req, Env) ->
             {Route, Expected} =
                 case otel_nova_test_util:span_attrs(Span) of
                     #{'http.route' := R} when is_binary(R) -> {R, <<"GET ", R/binary>>};
-                    #{} -> {undefined, ~"HTTP GET"}
+                    #{} -> {undefined, ~"GET"}
                 end,
             ?assertEqual(Expected, Span#span.name),
             Route

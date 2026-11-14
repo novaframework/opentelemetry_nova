@@ -18,11 +18,12 @@ be determined the attribute is left out rather than set to
 the raw path, so the number of metric series stays bounded. Instrumentation
 failures are logged without request data and never fail the request.
 
-The span is named `{METHOD} {route}`. With the `span_name_formatter` option
-set to `{Mod, Fun}`, it is named `Mod:Fun(Method, Route)` instead, where
-`Method` is the normalised method (`~"_OTHER"` for a non-standard one) and
-`Route` the template or `undefined`. A crash or a result that is not a binary
-keeps the default name.
+The span is named `{METHOD} {route}`, and keeps the name `{METHOD}` the
+stream handler gave it when there is no template. With the
+`span_name_formatter` option set to `{Mod, Fun}`, it is named
+`Mod:Fun(Method, Route)` instead, where `Method` is the normalised method
+(`~"_OTHER"` for a non-standard one) and `Route` the template or `undefined`.
+A crash or a result that is not a binary keeps the default name.
 
 Also register it as a `post_request` plugin. When Nova reports a controller
 or plugin crash in `crash_info` and renders a 5xx (or an unknown status), it

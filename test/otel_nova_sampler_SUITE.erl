@@ -94,7 +94,7 @@ stream_handler_other_request_is_sampled(_Config) ->
     run_request(~"GET", ~"/users"),
     receive
         {span, #span{name = Name}} ->
-            ?assertEqual(~"HTTP GET", Name)
+            ?assertEqual(~"GET", Name)
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
@@ -201,7 +201,7 @@ decide(Sampler, Path) ->
         otel_ctx:new(),
         ?TRACE_ID,
         otel_links:new([], 128, 128, 128),
-        ~"HTTP GET",
+        ~"GET",
         ?SPAN_KIND_SERVER,
         #{'http.request.method' => ~"GET", 'url.path' => Path}
     ).
