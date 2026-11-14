@@ -347,21 +347,9 @@ request_labels_are_bounded(_Config) ->
     ?assert(length(ets:match(otel_nova_prom_metrics, {{dp, '_', '_'}, '_'})) < 50).
 
 invalid_utf8_from_h2_keeps_exposition_valid(_Config) ->
-    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?HTTP_PORT, [binary, {active, false}]),
-    {Headers, _} = cow_hpack:encode([
-        {~":method", <<"G\"E\nT}", 16#FF>>},
-        {~":scheme", <<"ht\\tp\"x", 16#FE>>},
-        {~":authority", ~"h2.example"},
-        {~":path", ~"/child"}
-    ]),
-    ok = gen_tcp:send(Socket, [
-        ~"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
-        cow_http2:settings(#{}),
-        cow_http2:headers(1, fin, Headers)
-    ]),
-    {ok, _} = gen_tcp:recv(Socket, 0, 2000),
+    _ = h2_request(<<"G\"E\nT}", 16#FF>>, <<"ht\\tp\"x", 16#FE>>),
+    served = h2_request(~"G|E~T", ~"ht+tp.x"),
     _ = receive_spans(2),
-    ok = gen_tcp:close(Socket),
     await_metric(~"url_scheme=\"_OTHER\""),
     Metrics = otel_nova_prom_exporter:get_metrics(),
     ?assertEqual(Metrics, unicode:characters_to_binary(Metrics)),
@@ -891,6 +879,41 @@ request(Port, Path, Headers) ->
 
 %% Cowboy may end the stream, and so the server span, after the client has
 %% read the response, so both helpers flush until the data shows up.
+h2_request(Method, Scheme) ->
+    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?HTTP_PORT, [binary, {active, false}]),
+    {Headers, _} = cow_hpack:encode([
+        {~":method", Method},
+        {~":scheme", Scheme},
+        {~":authority", ~"h2.example"},
+        {~":path", ~"/child"}
+    ]),
+    ok = gen_tcp:send(Socket, [
+        ~"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+        cow_http2:settings(#{}),
+        cow_http2:headers(1, fin, Headers)
+    ]),
+    Outcome = h2_stream_outcome(Socket, <<>>),
+    ok = gen_tcp:close(Socket),
+    Outcome.
+
+h2_stream_outcome(Socket, Buffer) ->
+    case cow_http2:parse(Buffer) of
+        {ok, {headers, 1, _, _, _}, _} ->
+            served;
+        {ok, {rst_stream, 1, _}, _} ->
+            refused;
+        {ok, {goaway, _, _, _}, _} ->
+            refused;
+        {ok, _, Rest} ->
+            h2_stream_outcome(Socket, Rest);
+        {ignore, Rest} ->
+            h2_stream_outcome(Socket, Rest);
+        more ->
+            {ok, Data} = gen_tcp:recv(Socket, 0, 2000),
+            true = is_binary(Data),
+            h2_stream_outcome(Socket, <<Buffer/binary, Data/binary>>)
+    end.
+
 receive_spans(N) ->
     receive_spans(N, [], 50).
 
