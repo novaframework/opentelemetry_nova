@@ -41,6 +41,10 @@ before your own application in the release (or in `applications` of your
   `error.type` set and no `url.scheme` (see
   [Rejected requests](#rejected-requests)). Totals over that histogram rise by
   the number of such requests.
+- A WebSocket upgrade has `http.response.status_code` `101` on the span and
+  the metrics, where it had none. Over HTTP/2 the span, the duration and
+  `http.server.active_requests` now end at the handshake instead of when the
+  WebSocket closes.
 - A request without a route template, such as a 404 rendered by Nova's
   router, is named after the method alone (`GET`) instead of `HTTP GET`, as
   the semantic conventions specify. Queries and `otel_nova_sampler` entries
@@ -407,11 +411,16 @@ Notes:
   with the same value
   (`/teams/7/users/7` on `/teams/:team/users/:user` shows one of the two names
   in both places). The labels stay bounded; only their text is wrong.
+- A WebSocket upgrade is recorded as the handshake, not the lifetime of the
+  socket: the server span ends, the duration is recorded and
+  `http.server.active_requests` goes down when Cowboy answers the upgrade,
+  with status `101` over HTTP/1.1 and `200` for an extended CONNECT over
+  HTTP/2.
 - The trace context is not detached on a WebSocket upgrade. This is harmless.
   Over HTTP/1.1 the WebSocket runs in the connection process, which never has
   the context attached. Over HTTP/2 it keeps running in the request process,
   so spans the WebSocket handler creates are children of the upgrade request's
-  server span.
+  server span, which has ended by then.
 - With `cowboy_compress_h` after `otel_nova_stream_h`, the response body size
   is measured before compression.
 

@@ -20,6 +20,10 @@ measurement with the normalised method (`_OTHER` when none was parsed), the
 status code and `error.type`, and as a root server span without header or
 query attributes. `http.server.active_requests` is not touched.
 
+A protocol upgrade such as a WebSocket is recorded as the handshake: the span
+ends and the duration is recorded when Cowboy answers the upgrade, with status
+`101` over HTTP/1.1 and `200` over HTTP/2, not when the socket closes.
+
 Options, read from the `opentelemetry_nova` application environment:
 
 * `trust_forwarded_for` (default `false`): take `client.address` from the
@@ -76,7 +80,9 @@ both spans and metrics. Spans keep the sent value as
     error_type :: binary() | undefined,
     opts :: map() | undefined,
     response_header_attrs :: map(),
-    extra_metric_attrs :: map()
+    extra_metric_attrs :: map(),
+    version :: cowboy:http_version() | undefined,
+    upgrade = false :: boolean()
 }).
 
 -spec init(cowboy_stream:streamid(), cowboy_req:req(), cowboy:opts()) ->
@@ -88,7 +94,8 @@ init(StreamID, Req, Opts) ->
         resp_body_length = 0,
         metric_attrs = #{},
         response_header_attrs = #{},
-        extra_metric_attrs = #{}
+        extra_metric_attrs = #{},
+        version = maps:get(version, Req, undefined)
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
     try cowboy_stream:init(StreamID, Req1, Opts) of
@@ -117,7 +124,8 @@ info(_StreamID, {otel_nova_metric_attributes, Attrs}, State) when is_map(Attrs) 
     {[], safely(info, fun() -> add_metric_attributes(Attrs, State) end, State)};
 info(StreamID, Info, State0) ->
     State1 = safely(info, fun() -> observe(Info, State0) end, State0),
-    State = safely(info, fun() -> capture_response_headers(Info, State1) end, State1),
+    State2 = safely(info, fun() -> capture_response_headers(Info, State1) end, State1),
+    State = safely(info, fun() -> finish_upgrade(Info, State2) end, State2),
     {Commands, Next} = cowboy_stream:info(StreamID, Info, State#state.next),
     {Commands, State#state{next = Next}}.
 
@@ -241,7 +249,26 @@ observe({data, _IsFin, Data}, State = #state{resp_body_length = Acc}) ->
     State#state{resp_body_length = Acc + body_size(Data)};
 observe({error_response, Code, _Headers, Body}, State) when is_integer(Code) ->
     State#state{status_code = Code, resp_body_length = body_size(Body)};
+observe({switch_protocol, _Headers, cowboy_http2, _ModState}, State) ->
+    State;
+observe({switch_protocol, _Headers, _Mod, _ModState}, State = #state{version = 'HTTP/1.1'}) ->
+    State#state{status_code = 101};
+observe({switch_protocol, _Headers, _Mod, _ModState}, State) ->
+    State#state{upgrade = true};
 observe(_Info, State) ->
+    State.
+
+%% A protocol upgrade ends the HTTP request. Over HTTP/1.1 Cowboy terminates
+%% the stream as it sends the 101, so terminate/3 finishes the request. Over
+%% HTTP/2 the stream stays open for the lifetime of the upgraded protocol,
+%% such as a WebSocket, so the request is finished when Cowboy sends the
+%% response headers of the upgrade, and terminate/3 finds nothing left to do.
+finish_upgrade({headers, _Code, _Headers}, State = #state{upgrade = true, span_ctx = SpanCtx}) when
+    SpanCtx =/= undefined
+->
+    finish_request(State),
+    State#state{span_ctx = undefined};
+finish_upgrade(_Info, State) ->
     State.
 
 capture_response_headers(_Info, State = #state{opts = undefined}) ->

@@ -16,6 +16,17 @@ execute(Req = #{path := <<"/nova/templated/", _/binary>>}, Env) ->
         secure => false,
         controller_data => #{}
     }};
+execute(Req = #{path := <<"/nova/ws", _/binary>>}, Env) ->
+    Plugins = [
+        {pre_request, [{fun otel_nova_plugin:pre_request/4, #{}}]},
+        {post_request, [{fun otel_nova_plugin:post_request/4, #{}}]}
+    ],
+    {ok, Req#{plugins => Plugins}, Env#{
+        app => test_app,
+        cowboy_handler => nova_ws_handler,
+        arguments => #{module => otel_nova_test_ws},
+        secure => false
+    }};
 execute(Req = #{path := <<"/nova/", Action/binary>>}, Env) ->
     CrashPlugin = [
         {fun otel_nova_test_controller:crash_plugin/4, #{}}

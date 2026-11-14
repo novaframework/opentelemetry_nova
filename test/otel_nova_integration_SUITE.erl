@@ -34,7 +34,9 @@
     slow_request_headers_are_counted/1,
     unsupported_version_is_counted_as_server_error/1,
     early_errors_leave_active_requests_untouched/1,
-    stream_init_failure_does_not_leak_active_requests/1
+    stream_init_failure_does_not_leak_active_requests/1,
+    websocket_upgrade_is_recorded_at_the_handshake/1,
+    websocket_over_http2_is_recorded_at_the_handshake/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -88,7 +90,9 @@ all() ->
         slow_request_headers_are_counted,
         unsupported_version_is_counted_as_server_error,
         early_errors_leave_active_requests_untouched,
-        stream_init_failure_does_not_leak_active_requests
+        stream_init_failure_does_not_leak_active_requests,
+        websocket_upgrade_is_recorded_at_the_handshake,
+        websocket_over_http2_is_recorded_at_the_handshake
     ].
 
 init_per_suite(Config) ->
@@ -120,7 +124,8 @@ init_per_suite(Config) ->
             nova_security_handler,
             nova_handler,
             nova_plugin_handler
-        ]
+        ],
+        enable_connect_protocol => true
     }),
     {ok, _} = cowboy:start_clear(?EARLY_LISTENER, [{port, ?EARLY_PORT}], #{
         stream_handlers => [otel_nova_stream_h, cowboy_stream_h],
@@ -591,9 +596,88 @@ stream_init_failure_does_not_leak_active_requests(_Config) ->
         )
     ).
 
+%% The socket stays open while the span and the measurement are asserted, so
+%% neither waits for the WebSocket to close.
+websocket_upgrade_is_recorded_at_the_handshake(_Config) ->
+    Active = active_requests_total(),
+    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?NOVA_PORT, [binary, {active, false}]),
+    ok = gen_tcp:send(Socket, [
+        "GET /nova/ws HTTP/1.1\r\nhost: localhost\r\n",
+        "connection: upgrade\r\nupgrade: websocket\r\n",
+        "sec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    ]),
+    {ok, <<"HTTP/1.1 101 ", _/binary>>} = gen_tcp:recv(Socket, 0, 2000),
+    Server = otel_nova_test_util:receive_span(~"/nova/ws"),
+    ?assertEqual(~"GET /nova/ws", Server#span.name),
+    Attrs = otel_nova_test_util:span_attrs(Server),
+    ?assertEqual(101, maps:get('http.response.status_code', Attrs)),
+    ?assertNot(maps:is_key('error.type', Attrs)),
+    await_metric(
+        ~"http_server_request_duration_seconds_count\\{http_request_method=\"GET\",http_response_status_code=\"101\",http_route=\"/nova/ws\",url_scheme=\"http\"\\} 1\n"
+    ),
+    ?assertEqual(Active, active_requests_total()),
+    ok = gen_tcp:send(Socket, masked_text_frame(~"ping")),
+    ?assertEqual(ok, await_echo(Socket, ~"ping")),
+    ok = gen_tcp:close(Socket).
+
+%% Over HTTP/2 the stream of an extended CONNECT lives as long as the
+%% WebSocket does.
+websocket_over_http2_is_recorded_at_the_handshake(_Config) ->
+    Active = active_requests_total(),
+    Series =
+        ~"http_server_request_duration_seconds_count\\{http_request_method=\"CONNECT\",http_response_status_code=\"200\",http_route=\"/nova/ws2\",url_scheme=\"http\"\\} ",
+    {ok, Socket} = gen_tcp:connect("127.0.0.1", ?NOVA_PORT, [binary, {active, false}]),
+    {Headers, _} = cow_hpack:encode([
+        {~":method", ~"CONNECT"},
+        {~":protocol", ~"websocket"},
+        {~":scheme", ~"http"},
+        {~":authority", ~"localhost"},
+        {~":path", ~"/nova/ws2"},
+        {~"sec-websocket-version", ~"13"}
+    ]),
+    ok = gen_tcp:send(Socket, [~"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", cow_http2:settings(#{})]),
+    %% Extended CONNECT is only valid once the server's SETTINGS are acked.
+    {ok, _ServerSettings} = gen_tcp:recv(Socket, 0, 2000),
+    ok = gen_tcp:send(Socket, [cow_http2:settings_ack(), cow_http2:headers(1, nofin, Headers)]),
+    Server = otel_nova_test_util:receive_span(~"/nova/ws2"),
+    ?assertEqual(~"CONNECT /nova/ws2", Server#span.name),
+    Attrs = otel_nova_test_util:span_attrs(Server),
+    ?assertEqual(200, maps:get('http.response.status_code', Attrs)),
+    ?assertEqual(~"2", maps:get('network.protocol.version', Attrs)),
+    ?assertEqual(1, await_metric_value(Series, 1)),
+    ?assertEqual(Active, active_requests_total()),
+    ok = gen_tcp:send(Socket, cow_http2:data(1, nofin, masked_text_frame(~"ping"))),
+    ?assertEqual(ok, await_echo(Socket, ~"ping")),
+    ok = gen_tcp:close(Socket),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Late} -> ct:fail({second_span_for_upgraded_stream, Late})
+    after 500 ->
+        ok
+    end,
+    ?assertEqual(1, metric_value(Series)),
+    ?assertEqual(Active, active_requests_total()).
+
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
+
+masked_text_frame(Text) ->
+    <<16#81, (16#80 bor byte_size(Text)), 0:32, Text/binary>>.
+
+await_echo(Socket, Text) ->
+    await_echo(Socket, <<16#81, (byte_size(Text)), Text/binary>>, <<>>).
+
+await_echo(Socket, Frame, Received) ->
+    case binary:match(Received, Frame) of
+        nomatch ->
+            case gen_tcp:recv(Socket, 0, 2000) of
+                {ok, Data} -> await_echo(Socket, Frame, <<Received/binary, Data/binary>>);
+                {error, Reason} -> {error, Reason, Received}
+            end;
+        _ ->
+            ok
+    end.
 
 early_error_series(Method, Status) ->
     <<"http_server_request_duration_seconds_count\\{error_type=\"connection_error\",http_request_method=\"",

@@ -49,6 +49,7 @@ all() ->
         stream_handler_captures_response_headers,
         stream_handler_sets_opt_in_attributes,
         stream_handler_ignores_failure_after_response,
+        stream_handler_records_upgrade_status,
         early_error_records_span_and_duration,
         early_error_reports_the_response_downstream_handlers_return,
         early_error_ignores_failed_stream_init,
@@ -575,6 +576,31 @@ stream_handler_ignores_failure_after_response(_Config) ->
             otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/no-response"))
         )
     ).
+
+stream_handler_records_upgrade_status(_Config) ->
+    {_Cmds, Ws0} = otel_nova_stream_h:init(1, make_req(~"GET", ~"/upgrade/ws"), stream_opts()),
+    {_Cmds1, Ws1} = otel_nova_stream_h:info(
+        1, {switch_protocol, #{}, cowboy_websocket, undefined}, Ws0
+    ),
+    otel_nova_stream_h:terminate(1, switch_protocol, Ws1),
+    WsAttrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/upgrade/ws")),
+    ?assertEqual(101, maps:get('http.response.status_code', WsAttrs)),
+    ?assertNot(maps:is_key('error.type', WsAttrs)),
+    %% An h2c upgrade moves the request to HTTP/2, where it is answered.
+    {_Cmds2, H2c0} = otel_nova_stream_h:init(1, make_req(~"GET", ~"/upgrade/h2c"), stream_opts()),
+    {_Cmds3, H2c1} = otel_nova_stream_h:info(
+        1, {switch_protocol, #{}, cowboy_http2, undefined}, H2c0
+    ),
+    {_Cmds4, H2c2} = otel_nova_stream_h:info(1, {headers, 200, #{}}, H2c1),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Early} -> ct:fail({span_ended_before_the_response, Early})
+    after 300 ->
+        ok
+    end,
+    otel_nova_stream_h:terminate(1, normal, H2c2),
+    H2cAttrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/upgrade/h2c")),
+    ?assertEqual(200, maps:get('http.response.status_code', H2cAttrs)).
 
 early_error_records_span_and_duration(_Config) ->
     PartialReq = #{
