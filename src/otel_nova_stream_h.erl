@@ -86,10 +86,10 @@ both spans and metrics. Spans keep the sent value as
     opts :: map() | undefined,
     response_header_attrs :: map(),
     extra_metric_attrs :: map(),
-    version :: cowboy:http_version() | undefined,
+    http1 :: boolean(),
     upgrade = false :: boolean(),
     event_stream = false :: boolean(),
-    stream_duration :: otel_nova_attributes:stream_duration() | undefined,
+    stream_duration :: full | first_byte | exclude | undefined,
     first_byte :: integer() | undefined
 }).
 
@@ -103,7 +103,7 @@ init(StreamID, Req, Opts) ->
         metric_attrs = #{},
         response_header_attrs = #{},
         extra_metric_attrs = #{},
-        version = maps:get(version, Req, undefined)
+        http1 = maps:get(version, Req, undefined) =:= 'HTTP/1.1'
     },
     {Req1, State} = safely(init, fun() -> start_request(Req, State0) end, {Req, State0}),
     try cowboy_stream:init(StreamID, Req1, Opts) of
@@ -112,7 +112,7 @@ init(StreamID, Req, Opts) ->
     catch
         Class:Reason:Stacktrace ->
             safely(init, fun() -> finish_request(stream_failure(internal_error, State)) end, ok),
-            erlang:raise(Class, Reason, Stacktrace)
+            reraise(Class, Reason, Stacktrace)
     end.
 
 -spec data(cowboy_stream:streamid(), cowboy_stream:fin(), binary(), #state{}) ->
@@ -212,15 +212,7 @@ record_early_error(Reason, PartialReq, {response, Status, _Headers, _Body}, Star
     set_status_attributes(SpanCtx, StatusCode, Tag),
     Ctx = otel_tracer:set_current_span(otel_ctx:new(), SpanCtx),
     Attrs = otel_nova_attributes:early_error_metric(Method, StatusCode, Tag),
-    safely(
-        early_error,
-        fun() ->
-            otel_histogram:record(
-                Ctx, ?current_meter, 'http.server.request.duration', seconds_since(Start), Attrs
-            )
-        end,
-        ok
-    ),
+    safely(early_error, fun() -> record_duration(Ctx, seconds_since(Start), Attrs) end, ok),
     _ = otel_span:end_span(SpanCtx),
     ok.
 
@@ -267,7 +259,7 @@ observe({error_response, Code, _Headers, Body}, State) when is_integer(Code) ->
     State#state{status_code = Code, resp_body_length = body_size(Body)};
 observe({switch_protocol, _Headers, cowboy_http2, _ModState}, State) ->
     State;
-observe({switch_protocol, _Headers, _Mod, _ModState}, State = #state{version = 'HTTP/1.1'}) ->
+observe({switch_protocol, _Headers, _Mod, _ModState}, State = #state{http1 = true}) ->
     State#state{status_code = 101};
 observe({switch_protocol, _Headers, _Mod, _ModState}, State) ->
     State#state{upgrade = true};
@@ -384,7 +376,7 @@ duration(State = #state{req_start = ReqStart, first_byte = FirstByte}) ->
         first_byte when is_integer(FirstByte) ->
             seconds(FirstByte - ReqStart);
         _ ->
-            seconds(erlang:monotonic_time() - ReqStart)
+            seconds_since(ReqStart)
     end.
 
 stream_duration(#state{stream_duration = Mode}) when Mode =/= undefined ->
@@ -430,6 +422,13 @@ record_if_positive(Ctx, Name, Value, Attrs) when Value > 0 ->
     otel_histogram:record(Ctx, ?current_meter, Name, Value, Attrs);
 record_if_positive(_Ctx, _Name, _Value, _Attrs) ->
     ok.
+
+%% erlang:raise/3 is specified to return badarg, which it does for a
+%% malformed stacktrace.
+-spec reraise(error | exit | throw, term(), erlang:raise_stacktrace()) -> no_return().
+reraise(Class, Reason, Stacktrace) ->
+    erlang:raise(Class, Reason, Stacktrace),
+    error(Reason).
 
 safely(Callback, Fun, Default) ->
     try

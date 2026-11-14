@@ -559,15 +559,16 @@ unsupported_version_is_counted_as_server_error(_Config) ->
 %% An early error has no stream, so nothing was added to the gauge and
 %% nothing may be taken from it.
 early_errors_leave_active_requests_untouched(_Config) ->
-    Before = [active_requests_total(), metric_value(early_error_series(~"_OTHER", 400))],
+    Series = early_error_series(~"_OTHER", 400),
+    Active = active_requests_total(),
+    Before = metric_value(Series),
     [
         {ok, <<"HTTP/1.1 400 ", _/binary>>} = raw(?EARLY_PORT, "BROKEN\r\n\r\n")
      || _ <- lists:seq(1, 20)
     ],
     _ = receive_spans(20),
-    Series = early_error_series(~"_OTHER", 400),
-    ?assertEqual(lists:last(Before) + 20, await_metric_value(Series, lists:last(Before) + 20)),
-    ?assertEqual(hd(Before), active_requests_total()),
+    ?assertEqual(Before + 20, await_metric_value(Series, Before + 20)),
+    ?assertEqual(Active, active_requests_total()),
     ?assertNotMatch(
         {match, _},
         re:run(
@@ -732,11 +733,17 @@ duration_sum(Route) ->
         <<"http_server_request_duration_seconds_sum\\{[^}]*http_route=\"", Route/binary,
             "\"[^}]*\\} ">>,
     await_metric(Series),
-    {match, [Value]} = re:run(
-        otel_nova_prom_exporter:get_metrics(),
-        <<Series/binary, "([-+0-9.eE]+)\n">>,
-        [{capture, [1], binary}]
-    ),
+    case
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            <<Series/binary, "([-+0-9.eE]+)\n">>,
+            [{capture, [1], binary}]
+        )
+    of
+        {match, [Value]} when is_binary(Value) -> number_to_float(Value)
+    end.
+
+number_to_float(Value) ->
     try
         binary_to_float(Value)
     catch
@@ -760,8 +767,10 @@ await_echo(Socket, Frame, Received) ->
     case binary:match(Received, Frame) of
         nomatch ->
             case gen_tcp:recv(Socket, 0, 2000) of
-                {ok, Data} -> await_echo(Socket, Frame, <<Received/binary, Data/binary>>);
-                {error, Reason} -> {error, Reason, Received}
+                {ok, Data} when is_binary(Data) ->
+                    await_echo(Socket, Frame, <<Received/binary, Data/binary>>);
+                {error, Reason} ->
+                    {error, Reason, Received}
             end;
         _ ->
             ok
@@ -781,7 +790,7 @@ metric_value(Series) ->
             [{capture, [1], binary}]
         )
     of
-        {match, [Value]} -> binary_to_integer(Value);
+        {match, [Value]} when is_binary(Value) -> binary_to_integer(Value);
         nomatch -> 0
     end.
 
@@ -798,8 +807,10 @@ active_requests_total() ->
             [global, {capture, [1], binary}]
         )
     of
-        {match, Values} -> lists:sum([binary_to_integer(Value) || [Value] <- Values]);
-        nomatch -> 0
+        {match, Values} ->
+            lists:sum([binary_to_integer(Value) || [Value] <- Values, is_binary(Value)]);
+        nomatch ->
+            0
     end.
 
 receive_early_error_span(Status) ->

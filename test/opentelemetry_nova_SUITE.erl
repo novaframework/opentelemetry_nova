@@ -617,7 +617,7 @@ early_error_records_span_and_duration(_Config) ->
         headers => #{~"cookie" => ~"s3cr3t"}
     },
     Resp = {response, 431, #{~"content-length" => ~"0"}, <<>>},
-    Reason = {connection_error, limit_reached, 'A header value is too large.'},
+    Reason = {connection_error, protocol_error, 'A header value is too large.'},
     ?assertEqual(
         Resp, otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []})
     ),
@@ -1193,7 +1193,8 @@ metrics_stream_duration_is_set_per_request(_Config) ->
         ct:fail(no_stream_duration_cast)
     end,
     otel_nova_stream_h:terminate(1, normal, State),
-    ?assertEqual(ok, opentelemetry_nova:set_stream_duration(#{}, exclude)).
+    Uninstrumented = make_req(~"GET", ~"/stream/uninstrumented"),
+    ?assertEqual(ok, opentelemetry_nova:set_stream_duration(Uninstrumented, exclude)).
 
 metrics_carry_exemplars_of_the_server_span(_Config) ->
     Path = ~"/exemplar",

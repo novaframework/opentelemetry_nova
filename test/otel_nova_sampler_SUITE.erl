@@ -223,8 +223,10 @@ reject(Path, Resp) ->
         version => 'HTTP/1.1',
         headers => #{~"traceparent" => ?TRACEPARENT}
     },
-    Reason = {connection_error, limit_reached, 'A header value is too large.'},
-    Resp = otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []}).
+    Reason = {connection_error, protocol_error, 'A header value is too large.'},
+    ?assertEqual(
+        Resp, otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []})
+    ).
 
 decide(Sampler, Path) ->
     otel_sampler:should_sample(

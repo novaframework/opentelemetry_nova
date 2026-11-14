@@ -61,11 +61,13 @@ hook_fails_when_upstream_no_longer_needs_it(Config) ->
     ?assertEqual({ok, ?PATCHED}, file:read_file(filename:join(Dir, ?HEADER))).
 
 %% The release the script treats as already patched is the one in rebar.lock.
+%% When the lock moves, check the header of the new release and update or
+%% remove the script.
 hook_matches_the_locked_release(_Config) ->
-    {ok, [{_LockVersion, Locks} | _]} = file:consult(filename:join(project_root(), "rebar.lock")),
-    {_, {pkg, _, Version}, _} = lists:keyfind(~"opentelemetry_experimental", 1, Locks),
+    {ok, Lock} = file:read_file(filename:join(project_root(), "rebar.lock")),
     {ok, Script} = file:read_file(filename:join(project_root(), ?SCRIPT)),
-    ?assertNotEqual(nomatch, binary:match(Script, lock_line(Version))).
+    ?assertNotEqual(nomatch, binary:match(Lock, lock_line(~"0.6.0"))),
+    ?assertNotEqual(nomatch, binary:match(Script, lock_line(~"0.6.0"))).
 
 project_copy(Config, Name, Header, Version) ->
     Dir = filename:join(?config(priv_dir, Config), Name),
