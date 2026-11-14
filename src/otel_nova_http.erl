@@ -3,6 +3,7 @@
 
 -export([method/1, scheme/1, span_method/1, client_address/3, is_utf8/1]).
 -export([redact_query/2, lowercase/1, header_attributes/3, error_type/2, log_failure/4]).
+-export([is_event_stream/1]).
 
 -include_lib("kernel/include/logger.hrl").
 
@@ -135,6 +136,15 @@ header_values(Name, Value, Sensitive) ->
         true -> [~"REDACTED"];
         false -> [V || V <- [iolist_to_binary(Value)], is_utf8(V)]
     end.
+
+-spec is_event_stream(cowboy:http_headers()) -> boolean().
+is_event_stream(#{~"content-type" := ContentType}) ->
+    case lowercase(iolist_to_binary(ContentType)) of
+        <<"text/event-stream", _/binary>> -> true;
+        _ -> false
+    end;
+is_event_stream(_Headers) ->
+    false.
 
 -spec lowercase(binary()) -> binary().
 lowercase(Bin) ->

@@ -4,7 +4,7 @@
 -export([options/0, span/3, metric/3, response_headers/2, body_sizes/3, final_metric/5]).
 -export([add_extra_metric/2, early_error_span/2, early_error_metric/3]).
 
--export_type([options/0, attributes/0]).
+-export_type([options/0, attributes/0, stream_duration/0]).
 
 -define(SENSITIVE_HEADERS, [
     ~"authorization",
@@ -43,6 +43,8 @@
 
 -type attributes() :: #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
 
+-type stream_duration() :: full | first_byte | exclude.
+
 -type options() :: #{
     trust_forwarded_for := [binary()],
     metric_server_hosts := [binary()] | undefined,
@@ -52,7 +54,8 @@
     request_headers := [binary()],
     sensitive_headers := [binary()],
     response_headers := [binary()],
-    opt_in_attributes := [atom()]
+    opt_in_attributes := [atom()],
+    stream_duration := stream_duration()
 }.
 
 %% Read once per request; every value is normalised so that a malformed
@@ -90,6 +93,12 @@ options() ->
             case maps:get(opt_in_attributes, Env, []) of
                 OptIn when is_list(OptIn) -> [A || A <- OptIn, lists:member(A, ?OPT_IN_ATTRIBUTES)];
                 _ -> []
+            end,
+        stream_duration =>
+            case maps:get(stream_duration, Env, full) of
+                first_byte -> first_byte;
+                exclude -> exclude;
+                _ -> full
             end
     }.
 

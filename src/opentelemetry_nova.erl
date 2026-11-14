@@ -3,7 +3,7 @@
 OpenTelemetry instrumentation for Nova. See the README for the full setup.
 """.
 
--export([setup/0, setup/1, add_metric_attributes/2]).
+-export([setup/0, setup/1, add_metric_attributes/2, set_stream_duration/2]).
 
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry_api_experimental/include/otel_meter.hrl").
@@ -72,4 +72,30 @@ Does nothing when the request is not instrumented by `otel_nova_stream_h`.
 add_metric_attributes(Req = #{otel_nova_ctx := _}, Attrs) when is_map(Attrs) ->
     cowboy_req:cast({otel_nova_metric_attributes, Attrs}, Req);
 add_metric_attributes(_Req, Attrs) when is_map(Attrs) ->
+    ok.
+
+-doc """
+Sets how `http.server.request.duration` measures the current request, for a
+response that stays open long after it started: server-sent events, a chunked
+download, long polling. Call it from a controller or plugin with the Req of
+the request, before the response starts.
+
+* `first_byte`: the time until the response headers, or a complete response,
+  are handed to Cowboy.
+* `exclude`: no duration is recorded.
+* `full`: the time until the stream ends, which is the default for every
+  request.
+
+It overrides the `stream_duration` option, which applies to
+`text/event-stream` responses only. The server span, the body size histograms
+and `http.server.active_requests` are not affected.
+
+Does nothing when the request is not instrumented by `otel_nova_stream_h`.
+""".
+-spec set_stream_duration(cowboy_req:req(), full | first_byte | exclude) -> ok.
+set_stream_duration(Req = #{otel_nova_ctx := _}, Mode) when
+    Mode =:= full; Mode =:= first_byte; Mode =:= exclude
+->
+    cowboy_req:cast({otel_nova_stream_duration, Mode}, Req);
+set_stream_duration(_Req, Mode) when Mode =:= full; Mode =:= first_byte; Mode =:= exclude ->
     ok.

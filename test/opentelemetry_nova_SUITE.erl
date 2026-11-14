@@ -76,6 +76,8 @@ all() ->
         metrics_active_requests,
         metrics_body_sizes,
         metrics_include_added_attributes,
+        metrics_stream_duration_option_applies_to_event_streams,
+        metrics_stream_duration_is_set_per_request,
         metrics_carry_exemplars_of_the_server_span
     ].
 
@@ -116,7 +118,8 @@ end_per_testcase(_TestCase, _Config) ->
             sensitive_headers,
             opt_in_attributes,
             span_name_formatter,
-            trust_incoming_context
+            trust_incoming_context,
+            stream_duration
         ]
     ],
     otel_ctx:clear(),
@@ -1140,6 +1143,41 @@ metrics_include_added_attributes(_Config) ->
         ]
     ].
 
+metrics_stream_duration_option_applies_to_event_streams(_Config) ->
+    EventStream = #{~"content-type" => [~"Text/", ~"Event-Stream; charset=utf-8"]},
+    ?assertEqual(1, streamed_durations(~"/stream/default", EventStream, [])),
+    ok = application:set_env(opentelemetry_nova, stream_duration, sometimes),
+    ?assertEqual(1, streamed_durations(~"/stream/invalid-option", EventStream, [])),
+    ok = application:set_env(opentelemetry_nova, stream_duration, exclude),
+    ?assertEqual(0, streamed_durations(~"/stream/excluded", EventStream, [])),
+    ?assertEqual(
+        1, streamed_durations(~"/stream/json", #{~"content-type" => ~"application/json"}, [])
+    ),
+    ?assertEqual(1, streamed_durations(~"/stream/untyped", #{}, [])).
+
+metrics_stream_duration_is_set_per_request(_Config) ->
+    ?assertEqual(
+        0, streamed_durations(~"/stream/marked", #{}, [{otel_nova_stream_duration, exclude}])
+    ),
+    ?assertEqual(
+        1,
+        streamed_durations(~"/stream/invalid-mode", #{}, [{otel_nova_stream_duration, sometimes}])
+    ),
+    ok = application:set_env(opentelemetry_nova, stream_duration, exclude),
+    EventStream = #{~"content-type" => ~"text/event-stream"},
+    ?assertEqual(
+        1, streamed_durations(~"/stream/kept", EventStream, [{otel_nova_stream_duration, full}])
+    ),
+    {State, DownReq} = start_stream(1, make_req(~"GET", ~"/stream/cast")),
+    ok = opentelemetry_nova:set_stream_duration(DownReq, first_byte),
+    receive
+        {{_Pid, 1}, Cast} -> ?assertEqual({otel_nova_stream_duration, first_byte}, Cast)
+    after 1000 ->
+        ct:fail(no_stream_duration_cast)
+    end,
+    otel_nova_stream_h:terminate(1, normal, State),
+    ?assertEqual(ok, opentelemetry_nova:set_stream_duration(#{}, exclude)).
+
 metrics_carry_exemplars_of_the_server_span(_Config) ->
     Path = ~"/exemplar",
     {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"PUT", Path), stream_opts()),
@@ -1292,6 +1330,36 @@ metric_error_type(Path, Name) ->
             metric_error_type(Path, Name)
     after 5000 ->
         ct:fail({timeout_waiting_for_metric, Path})
+    end.
+
+%% Streams a response with Headers on its own route and returns how many
+%% duration measurements that route has.
+streamed_durations(Route, Headers, Infos) ->
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"GET", Route), stream_opts()),
+    State1 = send_infos([{otel_nova_route, Route} | Infos] ++ [{headers, 200, Headers}], State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    drain_spans(),
+    drain_metrics(),
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        lists:sum([
+            Count
+         || #histogram_datapoint{attributes = #{'http.route' := R}, count = Count} <- Datapoints,
+            R =:= Route
+        ])
+    end).
+
+send_infos([], State) ->
+    State;
+send_infos([Info | Infos], State0) ->
+    {_Cmds, State} = otel_nova_stream_h:info(1, Info, State0),
+    send_infos(Infos, State).
+
+drain_metrics() ->
+    receive
+        {otel_metric, _} -> drain_metrics()
+    after 0 -> ok
     end.
 
 forward_casts(StreamID, State0) ->

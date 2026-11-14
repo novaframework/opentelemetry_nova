@@ -50,6 +50,11 @@ Options, read from the `opentelemetry_nova` application environment:
   as `REDACTED`, in addition to `authorization`, `proxy-authorization`,
   `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`, `x-csrf-token` and
   `x-amz-security-token`.
+* `stream_duration` (default `full`): how `http.server.request.duration`
+  measures a `text/event-stream` response. `full` is the time until the stream
+  ends, `first_byte` the time until the response headers are sent, and
+  `exclude` records no duration. `opentelemetry_nova:set_stream_duration/2`
+  sets it for one request of any content type.
 * `opt_in_attributes` (default `[]`): any of `'client.port'`,
   `'network.local.address'`, `'network.local.port'`, `'network.transport'`,
   `'http.request.body.size'` and `'http.response.body.size'`.
@@ -82,7 +87,10 @@ both spans and metrics. Spans keep the sent value as
     response_header_attrs :: map(),
     extra_metric_attrs :: map(),
     version :: cowboy:http_version() | undefined,
-    upgrade = false :: boolean()
+    upgrade = false :: boolean(),
+    event_stream = false :: boolean(),
+    stream_duration :: otel_nova_attributes:stream_duration() | undefined,
+    first_byte :: integer() | undefined
 }).
 
 -spec init(cowboy_stream:streamid(), cowboy_req:req(), cowboy:opts()) ->
@@ -120,6 +128,10 @@ info(_StreamID, {otel_nova_route, Route}, State) when is_binary(Route) ->
     {[], State#state{http_route = Route}};
 info(_StreamID, {otel_nova_error_type, Tag}, State) when is_binary(Tag) ->
     {[], State#state{error_type = Tag}};
+info(_StreamID, {otel_nova_stream_duration, Mode}, State) when
+    Mode =:= full; Mode =:= first_byte; Mode =:= exclude
+->
+    {[], State#state{stream_duration = Mode}};
 info(_StreamID, {otel_nova_metric_attributes, Attrs}, State) when is_map(Attrs) ->
     {[], safely(info, fun() -> add_metric_attributes(Attrs, State) end, State)};
 info(StreamID, Info, State0) ->
@@ -242,9 +254,11 @@ links(RemoteSpan) ->
     [opentelemetry:link(RemoteSpan) || otel_span:is_valid(RemoteSpan)].
 
 observe({response, Code, _Headers, Body}, State) when is_integer(Code) ->
-    State#state{status_code = Code, resp_body_length = body_size(Body)};
-observe({headers, Code, _Headers}, State) when is_integer(Code) ->
-    State#state{status_code = Code};
+    first_byte(State#state{status_code = Code, resp_body_length = body_size(Body)});
+observe({headers, Code, Headers}, State) when is_integer(Code) ->
+    first_byte(State#state{
+        status_code = Code, event_stream = otel_nova_http:is_event_stream(Headers)
+    });
 observe({data, _IsFin, Data}, State = #state{resp_body_length = Acc}) ->
     State#state{resp_body_length = Acc + body_size(Data)};
 observe({error_response, Code, _Headers, Body}, State) when is_integer(Code) ->
@@ -256,6 +270,11 @@ observe({switch_protocol, _Headers, _Mod, _ModState}, State = #state{version = '
 observe({switch_protocol, _Headers, _Mod, _ModState}, State) ->
     State#state{upgrade = true};
 observe(_Info, State) ->
+    State.
+
+first_byte(State = #state{first_byte = undefined}) ->
+    State#state{first_byte = erlang:monotonic_time()};
+first_byte(State) ->
     State.
 
 %% A protocol upgrade ends the HTTP request. Over HTTP/1.1 Cowboy terminates
@@ -334,24 +353,49 @@ end_active_request(#state{metric_attrs = MetricAttrs}) ->
 %% The connection process has no attached context, so the server span is
 %% passed explicitly; with exemplars enabled the measurements then carry its
 %% trace and span id.
-record_metrics(#state{
-    span_ctx = SpanCtx,
-    status_code = StatusCode,
-    http_route = Route,
-    req_start = ReqStart,
-    req_body_length = ReqBodyLen,
-    resp_body_length = RespBodyLen,
-    metric_attrs = MetricAttrs,
-    error_type = Tag,
-    extra_metric_attrs = Extra
-}) ->
-    Duration = seconds_since(ReqStart),
+record_metrics(
+    State = #state{
+        span_ctx = SpanCtx,
+        status_code = StatusCode,
+        http_route = Route,
+        req_body_length = ReqBodyLen,
+        resp_body_length = RespBodyLen,
+        metric_attrs = MetricAttrs,
+        error_type = Tag,
+        extra_metric_attrs = Extra
+    }
+) ->
     Attrs = otel_nova_attributes:final_metric(MetricAttrs, Route, StatusCode, Tag, Extra),
     Ctx = otel_tracer:set_current_span(otel_ctx:new(), SpanCtx),
-    otel_histogram:record(Ctx, ?current_meter, 'http.server.request.duration', Duration, Attrs),
+    record_duration(Ctx, duration(State), Attrs),
     record_if_positive(Ctx, 'http.server.request.body.size', ReqBodyLen, Attrs),
     record_if_positive(Ctx, 'http.server.response.body.size', RespBodyLen, Attrs),
     ok.
+
+%% The lifetime of a long-lived response says nothing about latency, so a
+%% server-sent event stream, or a request the application marked, can be
+%% measured up to the response headers or left out of the histogram.
+duration(State = #state{req_start = ReqStart, first_byte = FirstByte}) ->
+    case stream_duration(State) of
+        exclude ->
+            undefined;
+        first_byte when is_integer(FirstByte) ->
+            seconds(FirstByte - ReqStart);
+        _ ->
+            seconds(erlang:monotonic_time() - ReqStart)
+    end.
+
+stream_duration(#state{stream_duration = Mode}) when Mode =/= undefined ->
+    Mode;
+stream_duration(#state{event_stream = true, opts = #{stream_duration := Mode}}) ->
+    Mode;
+stream_duration(_State) ->
+    full.
+
+record_duration(_Ctx, undefined, _Attrs) ->
+    ok;
+record_duration(Ctx, Duration, Attrs) ->
+    otel_histogram:record(Ctx, ?current_meter, 'http.server.request.duration', Duration, Attrs).
 
 set_status_attributes(_SpanCtx, undefined, _Tag) ->
     ok;
@@ -372,7 +416,10 @@ set_status_attributes(SpanCtx, Code, _Tag) ->
     ok.
 
 seconds_since(Start) ->
-    erlang:convert_time_unit(erlang:monotonic_time() - Start, native, microsecond) / 1000000.
+    seconds(erlang:monotonic_time() - Start).
+
+seconds(Native) ->
+    erlang:convert_time_unit(Native, native, microsecond) / 1000000.
 
 body_size({sendfile, _Offset, Length, _Path}) -> Length;
 body_size(Body) -> iolist_size(Body).

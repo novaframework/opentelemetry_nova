@@ -36,7 +36,11 @@
     early_errors_leave_active_requests_untouched/1,
     stream_init_failure_does_not_leak_active_requests/1,
     websocket_upgrade_is_recorded_at_the_handshake/1,
-    websocket_over_http2_is_recorded_at_the_handshake/1
+    websocket_over_http2_is_recorded_at_the_handshake/1,
+    event_stream_duration_is_the_stream_lifetime_by_default/1,
+    event_stream_duration_can_stop_at_the_first_byte/1,
+    event_stream_can_be_left_out_of_the_duration/1,
+    controller_sets_stream_duration_for_its_request/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -92,7 +96,11 @@ all() ->
         early_errors_leave_active_requests_untouched,
         stream_init_failure_does_not_leak_active_requests,
         websocket_upgrade_is_recorded_at_the_handshake,
-        websocket_over_http2_is_recorded_at_the_handshake
+        websocket_over_http2_is_recorded_at_the_handshake,
+        event_stream_duration_is_the_stream_lifetime_by_default,
+        event_stream_duration_can_stop_at_the_first_byte,
+        event_stream_can_be_left_out_of_the_duration,
+        controller_sets_stream_duration_for_its_request
     ].
 
 init_per_suite(Config) ->
@@ -171,6 +179,7 @@ end_per_testcase(_TestCase, _Config) ->
     _ = application:unset_env(opentelemetry_nova, trust_forwarded_for),
     _ = application:unset_env(opentelemetry_nova, response_headers),
     _ = application:unset_env(opentelemetry_nova, request_headers),
+    _ = application:unset_env(opentelemetry_nova, stream_duration),
     _ = application:stop(otel_nova_test_app),
     _ = application:unload(otel_nova_test_app),
     otel_ctx:clear(),
@@ -658,9 +667,78 @@ websocket_over_http2_is_recorded_at_the_handshake(_Config) ->
     ?assertEqual(1, metric_value(Series)),
     ?assertEqual(Active, active_requests_total()).
 
+%% otel_nova_test_sse keeps its stream open for 400 ms after the headers.
+event_stream_duration_is_the_stream_lifetime_by_default(_Config) ->
+    {200, <<"data: first", _/binary>>} = request(?NOVA_PORT, "/nova/sse/full", []),
+    Server = otel_nova_test_util:receive_span(~"/nova/sse/full"),
+    ?assertEqual(~"GET /nova/sse/full", Server#span.name),
+    ?assert(duration_sum(~"/nova/sse/full") >= 0.4).
+
+event_stream_duration_can_stop_at_the_first_byte(_Config) ->
+    ok = application:set_env(opentelemetry_nova, stream_duration, first_byte),
+    {200, _} = request(?NOVA_PORT, "/nova/sse/first_byte", []),
+    Server = otel_nova_test_util:receive_span(~"/nova/sse/first_byte"),
+    ?assert(span_milliseconds(Server) >= 400),
+    Sum = duration_sum(~"/nova/sse/first_byte"),
+    ?assert(Sum < 0.3, Sum).
+
+%% Only the event stream is left out: the request after it is measured.
+event_stream_can_be_left_out_of_the_duration(_Config) ->
+    ok = application:set_env(opentelemetry_nova, stream_duration, exclude),
+    Active = active_requests_total(),
+    {200, _} = request(?NOVA_PORT, "/nova/sse/exclude", []),
+    Server = otel_nova_test_util:receive_span(~"/nova/sse/exclude"),
+    ?assert(span_milliseconds(Server) >= 400),
+    ?assertEqual(
+        200, maps:get('http.response.status_code', otel_nova_test_util:span_attrs(Server))
+    ),
+    {200, _} = request(?NOVA_PORT, "/nova/not_a_stream", []),
+    _ = otel_nova_test_util:receive_span(~"/nova/not_a_stream"),
+    ?assert(duration_sum(~"/nova/not_a_stream") < 0.3),
+    ?assertEqual(nomatch, duration_count(~"/nova/sse/exclude")),
+    ?assertEqual(Active, active_requests_total()).
+
+%% The option is left at its default: the controller and the handler decide
+%% for their own request, whatever its content type.
+controller_sets_stream_duration_for_its_request(_Config) ->
+    {200, _} = request(?NOVA_PORT, "/nova/long_poll", []),
+    _ = otel_nova_test_util:receive_span(~"/nova/long_poll"),
+    {200, _} = request(?NOVA_PORT, "/nova/sse/marked", []),
+    Server = otel_nova_test_util:receive_span(~"/nova/sse/marked"),
+    ?assert(span_milliseconds(Server) >= 400),
+    Sum = duration_sum(~"/nova/sse/marked"),
+    ?assert(Sum < 0.3, Sum),
+    ?assertEqual(nomatch, duration_count(~"/nova/long_poll")).
+
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
+
+span_milliseconds(#span{start_time = Start, end_time = End}) ->
+    erlang:convert_time_unit(End - Start, native, millisecond).
+
+duration_sum(Route) ->
+    Series =
+        <<"http_server_request_duration_seconds_sum\\{[^}]*http_route=\"", Route/binary,
+            "\"[^}]*\\} ">>,
+    await_metric(Series),
+    {match, [Value]} = re:run(
+        otel_nova_prom_exporter:get_metrics(),
+        <<Series/binary, "([-+0-9.eE]+)\n">>,
+        [{capture, [1], binary}]
+    ),
+    try
+        binary_to_float(Value)
+    catch
+        error:badarg -> float(binary_to_integer(Value))
+    end.
+
+duration_count(Route) ->
+    otel_meter_server:force_flush(),
+    re:run(
+        otel_nova_prom_exporter:get_metrics(),
+        <<"http_server_request_duration_seconds_count\\{[^}]*http_route=\"", Route/binary, "\"">>
+    ).
 
 masked_text_frame(Text) ->
     <<16#81, (16#80 bor byte_size(Text)), 0:32, Text/binary>>.

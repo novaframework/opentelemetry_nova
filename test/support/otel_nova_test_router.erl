@@ -17,16 +17,9 @@ execute(Req = #{path := <<"/nova/templated/", _/binary>>}, Env) ->
         controller_data => #{}
     }};
 execute(Req = #{path := <<"/nova/ws", _/binary>>}, Env) ->
-    Plugins = [
-        {pre_request, [{fun otel_nova_plugin:pre_request/4, #{}}]},
-        {post_request, [{fun otel_nova_plugin:post_request/4, #{}}]}
-    ],
-    {ok, Req#{plugins => Plugins}, Env#{
-        app => test_app,
-        cowboy_handler => nova_ws_handler,
-        arguments => #{module => otel_nova_test_ws},
-        secure => false
-    }};
+    cowboy_handler(nova_ws_handler, #{module => otel_nova_test_ws}, Req, Env);
+execute(Req = #{path := <<"/nova/sse/", _/binary>>}, Env) ->
+    cowboy_handler(otel_nova_test_sse, #{}, Req, Env);
 execute(Req = #{path := <<"/nova/", Action/binary>>}, Env) ->
     CrashPlugin = [
         {fun otel_nova_test_controller:crash_plugin/4, #{}}
@@ -61,6 +54,19 @@ execute(Req = #{path := Path}, Env) ->
             {ok, Req#{plugins => Plugins}, Env1}
     end.
 
+cowboy_handler(Handler, Arguments, Req, Env) ->
+    Plugins = [
+        {pre_request, [{fun otel_nova_plugin:pre_request/4, #{}}]},
+        {post_request, [{fun otel_nova_plugin:post_request/4, #{}}]}
+    ],
+    {ok, Req#{plugins => Plugins}, Env#{
+        app => test_app,
+        cowboy_handler => Handler,
+        arguments => Arguments,
+        secure => false
+    }}.
+
+nova_callback(~"long_poll") -> fun otel_nova_test_controller:long_poll/1;
 nova_callback(~"crash") -> fun otel_nova_test_controller:crash/1;
 nova_callback(~"crash_tuple") -> fun otel_nova_test_controller:crash_tuple/1;
 nova_callback(~"throw_status") -> fun otel_nova_test_controller:throw_status/1;

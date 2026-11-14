@@ -182,6 +182,7 @@ Set these in the `opentelemetry_nova` application environment:
 | `request_headers` | `[]` | Request header names recorded as `http.request.header.<name>` span attributes. Names are lowercased. |
 | `response_headers` | `[]` | Response header names recorded as `http.response.header.<name>` span attributes. Names are lowercased. |
 | `span_name_formatter` | unset | `{Mod, Fun}`: the plugin names the server span `Mod:Fun(Method, Route)`. `Method` is the normalised method (`~"_OTHER"` for a non-standard one), `Route` the route template or `undefined`. A crash or a non-binary result keeps the default name and is logged as `otel_nova_instrumentation_failed`. |
+| `stream_duration` | `full` | How `http.server.request.duration` measures a `text/event-stream` response: `full` (until the stream ends), `first_byte` (until the response headers are sent) or `exclude` (no duration recorded). See [Long-lived responses](#long-lived-responses). |
 | `opt_in_attributes` | `[]` | Opt-in span attributes to add: any of `'client.port'`, `'network.local.address'`, `'network.local.port'`, `'network.transport'`, `'http.request.body.size'`, `'http.response.body.size'`. |
 | `sensitive_headers` | `[]` | More captured headers whose value is recorded as `[~"REDACTED"]`. Always added to the defaults `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`, `x-csrf-token` and `x-amz-security-token`, which cannot be turned off. Names are lowercased. |
 
@@ -524,6 +525,46 @@ trace and span id of its request:
 
 The default `trace_based` exemplar filter keeps exemplars only for sampled
 spans. `http.server.active_requests` has none.
+
+### Long-lived responses
+
+`http.server.request.duration` is the time from the request to the end of the
+stream. That is the lifetime of the connection for server-sent events, a
+chunked download or a long poll, and a few of those dominate the latency
+percentiles of every other request. By default nothing changes: they are
+recorded in full, as the semantic conventions define the metric.
+
+For `text/event-stream` responses sent with `cowboy_req:stream_reply`, set
+`stream_duration`:
+
+```erlang
+{opentelemetry_nova, [{stream_duration, first_byte}]}
+```
+
+- `first_byte`: the time until the response headers are handed to Cowboy.
+  The semantic conventions say the duration should equal the duration of the
+  server span, which this no longer does.
+- `exclude`: no duration is recorded for the request.
+- `full`: the default.
+
+For any other response, or to decide per request, call
+`opentelemetry_nova:set_stream_duration/2` from the controller or a plugin
+before the response starts. It overrides the option:
+
+```erlang
+poll(Req) ->
+    ok = opentelemetry_nova:set_stream_duration(Req, exclude),
+    {json, wait_for_update()}.
+```
+
+Only the duration histogram is affected. The server span still covers the
+whole stream and ends once, `http.server.active_requests` counts the request
+until the stream ends, and the body size histograms are recorded. The
+measurement, when there is one, is still recorded when the stream ends, so an
+open stream is not in the histogram yet.
+
+A WebSocket upgrade needs none of this: it is always recorded as the
+handshake (see the notes under [Span Attributes](#span-attributes)).
 
 ### Per-request metric attributes
 
