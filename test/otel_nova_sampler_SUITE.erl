@@ -1,8 +1,22 @@
 -module(otel_nova_sampler_SUITE).
 -behaviour(ct_suite).
 
--compile(export_all).
--compile(nowarn_export_all).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    excludes_matching_server_span/1,
+    records_non_matching_server_span/1,
+    records_non_server_span_even_if_name_matches/1,
+    stream_handler_excluded_request_is_not_sampled/1,
+    stream_handler_other_request_is_sampled/1,
+    sampled_traceparent_forces_excluded_request_by_default/1,
+    untrusted_context_does_not_force_sampling/1,
+    untrusted_context_starts_new_trace_with_link/1,
+    map_config_delegates_to_sampler/1,
+    description_includes_delegate/1,
+    trust_callback_decides_per_request/1,
+    crashing_trust_callback_does_not_trust/1,
+    rejected_request_follows_exclusions_and_ignores_traceparent/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").

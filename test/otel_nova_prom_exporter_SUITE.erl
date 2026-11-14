@@ -1,8 +1,34 @@
 -module(otel_nova_prom_exporter_SUITE).
 -behaviour(ct_suite).
 
--compile(export_all).
--compile(nowarn_export_all).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    format_histogram/1,
+    format_counter/1,
+    format_gauge/1,
+    format_updown_counter/1,
+    label_dots_to_underscores/1,
+    label_escaping/1,
+    invalid_utf8_label_value/1,
+    list_attributes_share_the_series_of_a_map/1,
+    string_label_value/1,
+    label_value_without_a_text_form/1,
+    delta_series_overflow/1,
+    cumulative_series_overflow/1,
+    cumulative_histogram_series_overflow/1,
+    overflow_attrs_do_not_consume_series/1,
+    meta_row_stores_no_datapoints/1,
+    second_exporter_instance_is_ignored/1,
+    unit_suffix_seconds/1,
+    unit_suffix_bytes/1,
+    empty_metrics/1,
+    delta_accumulation/1,
+    delta_updown_counter_accumulates/1,
+    cumulative_counter_replaces/1,
+    cumulative_histogram_replaces/1,
+    reader_api_export_3/1,
+    http_endpoint/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").

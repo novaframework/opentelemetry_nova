@@ -5,8 +5,6 @@ OpenTelemetry instrumentation for Nova. See the README for the full setup.
 
 -export([setup/0, setup/1, add_metric_attributes/2, set_stream_duration/2]).
 
--include_lib("opentelemetry_api/include/opentelemetry.hrl").
-
 -doc "Creates the HTTP server metric instruments. Call it once from your application's `start/2`.".
 -spec setup() -> ok.
 setup() ->

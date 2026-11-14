@@ -1,12 +1,63 @@
 -module(opentelemetry_nova_SUITE).
 -behaviour(ct_suite).
 
--compile(export_all).
--compile(nowarn_export_all).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    stream_handler_creates_span/1,
+    stream_handler_captures_status/1,
+    stream_handler_sets_error_on_5xx/1,
+    stream_handler_sets_error_type_on_5xx/1,
+    stream_handler_ends_span_on_auth_rejection/1,
+    stream_handler_protocol_version/1,
+    stream_handler_client_address_xff/1,
+    stream_handler_client_address_forwarded/1,
+    stream_handler_client_address_peer_fallback/1,
+    stream_handler_ignores_forwarded_for_by_default/1,
+    stream_handler_rejects_invalid_forwarded_for/1,
+    stream_handler_trusts_listed_forwarding_headers/1,
+    stream_handler_normalises_unknown_method/1,
+    stream_handler_tags_stream_failure/1,
+    stream_handler_sets_redacted_url_query/1,
+    stream_handler_url_query_options/1,
+    stream_handler_captures_request_headers/1,
+    stream_handler_captures_response_headers/1,
+    stream_handler_sets_opt_in_attributes/1,
+    stream_handler_ignores_failure_after_response/1,
+    stream_handler_records_upgrade_status/1,
+    early_error_records_span_and_duration/1,
+    early_error_reports_the_response_downstream_handlers_return/1,
+    early_error_ignores_failed_stream_init/1,
+    plugin_enriches_span/1,
+    plugin_sets_http_route/1,
+    plugin_sets_http_route_with_bindings/1,
+    plugin_folds_catch_all_tail_into_route/1,
+    plugin_canonicalises_route/1,
+    plugin_omits_undeterminable_route/1,
+    plugin_prefers_route_from_nova/1,
+    plugin_ignores_invalid_route_from_nova/1,
+    plugin_sets_logger_metadata_with_trace_ids/1,
+    plugin_tags_crash_from_crash_info/1,
+    plugin_uses_span_name_formatter/1,
+    plugin_falls_back_when_span_name_formatter_fails/1,
+    plugin_ignores_crash_info_without_reason/1,
+    plugin_skips_logger_metadata_without_valid_span/1,
+    stream_handler_restores_context_on_terminate/1,
+    trace_context_propagation/1,
+    metrics_request_duration/1,
+    metrics_request_duration_with_route/1,
+    metrics_server_attributes_need_allowlist/1,
+    metrics_error_type_in_metrics/1,
+    metrics_active_requests/1,
+    metrics_body_sizes/1,
+    stream_handler_counts_streamed_response_body/1,
+    metrics_include_added_attributes/1,
+    metrics_stream_duration_option_applies_to_event_streams/1,
+    metrics_stream_duration_is_set_per_request/1,
+    metrics_carry_exemplars_of_the_server_span/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
--include_lib("opentelemetry_api/include/otel_tracer.hrl").
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
