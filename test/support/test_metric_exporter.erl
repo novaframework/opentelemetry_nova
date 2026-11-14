@@ -9,7 +9,7 @@ export(Metrics, _Resource, _State) ->
     case persistent_term:get(test_metric_pid, undefined) of
         undefined ->
             ok;
-        Pid ->
+        Pid when is_pid(Pid) ->
             [Pid ! {otel_metric, M} || M <- Metrics]
     end,
     ok.

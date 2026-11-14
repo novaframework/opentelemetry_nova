@@ -30,7 +30,10 @@ all() ->
 
 compile_hooks_succeed_as_a_dependency(Config) ->
     {ok, Terms} = file:consult(filename:join(project_root(), "rebar.config")),
-    Hooks = [Cmd || {compile, Cmd} <- proplists:get_value(pre_hooks, Terms, [])],
+    Hooks = [
+        Cmd
+     || {pre_hooks, PreHooks} <- Terms, is_list(PreHooks), {compile, Cmd} <- PreHooks
+    ],
     DepDir = filename:join(?config(priv_dir, Config), "opentelemetry_nova"),
     ok = filelib:ensure_path(DepDir),
     ?assertEqual([{Cmd, 0} || Cmd <- Hooks], [{Cmd, run_like_rebar3(Cmd, DepDir)} || Cmd <- Hooks]).
@@ -98,10 +101,12 @@ collect(Port, Output) ->
     after 10000 -> error(hook_timeout)
     end.
 
+-spec project_root() -> file:filename_all().
 project_root() ->
-    Source = proplists:get_value(source, ?MODULE:module_info(compile)),
+    [Source] = [S || {source, S} <- ?MODULE:module_info(compile), is_list(S)],
     find_root(filename:dirname(Source)).
 
+-spec find_root(file:filename_all()) -> file:filename_all().
 find_root("/") ->
     error(project_root_not_found);
 find_root(Dir) ->

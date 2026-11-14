@@ -890,14 +890,10 @@ plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     Env = #{app => my_app, callback => fun fake_controller:index/1},
     State = run_plugin(DownReq, Env, State0),
 
-    Meta = logger:get_process_metadata(),
-    ?assert(is_map(Meta)),
-    TraceId = maps:get(trace_id, Meta, undefined),
-    SpanId = maps:get(span_id, Meta, undefined),
-    ?assert(is_binary(TraceId)),
-    ?assert(is_binary(SpanId)),
-    ?assertEqual(32, byte_size(TraceId)),
-    ?assertEqual(16, byte_size(SpanId)),
+    ?assertMatch(
+        #{trace_id := <<_:32/binary>>, span_id := <<_:16/binary>>},
+        logger:get_process_metadata()
+    ),
 
     {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
@@ -964,7 +960,7 @@ metrics_request_duration(_Config) ->
         DP = find_datapoint_with_status(200, Datapoints),
         ?assert(DP#histogram_datapoint.sum >= 0),
         ?assert(DP#histogram_datapoint.count >= 1),
-        Attrs = DP#histogram_datapoint.attributes,
+        Attrs = datapoint_attributes(DP),
         ?assertEqual(<<"GET">>, maps:get('http.request.method', Attrs)),
         ?assertEqual(<<"http">>, maps:get('url.scheme', Attrs)),
         ?assertNotMatch(#{'server.address' := _}, Attrs),
@@ -1015,7 +1011,7 @@ metrics_request_duration_with_route(_Config) ->
     ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
         #histogram{datapoints = Datapoints} = Data,
         DP = find_datapoint_with_status(200, Datapoints),
-        Attrs = DP#histogram_datapoint.attributes,
+        Attrs = datapoint_attributes(DP),
         ?assertEqual(<<"/users">>, maps:get('http.route', Attrs)),
         ?assertEqual(200, maps:get('http.response.status_code', Attrs))
     end).
@@ -1032,7 +1028,7 @@ metrics_error_type_in_metrics(_Config) ->
     ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
         #histogram{datapoints = Datapoints} = Data,
         DP = find_datapoint_with_status(500, Datapoints),
-        Attrs = DP#histogram_datapoint.attributes,
+        Attrs = datapoint_attributes(DP),
         ?assertEqual(<<"500">>, maps:get('error.type', Attrs))
     end).
 
@@ -1424,10 +1420,16 @@ drain_spans() ->
     after 100 -> ok
     end.
 
-find_datapoint_with_status(Code, [DP = #histogram_datapoint{attributes = Attrs} | Rest]) ->
-    case maps:get('http.response.status_code', Attrs, undefined) of
+-spec find_datapoint_with_status(integer(), [#histogram_datapoint{}]) -> #histogram_datapoint{}.
+find_datapoint_with_status(Code, [DP | Rest]) ->
+    case maps:get('http.response.status_code', datapoint_attributes(DP), undefined) of
         Code -> DP;
         _ -> find_datapoint_with_status(Code, Rest)
     end;
 find_datapoint_with_status(Code, []) ->
     ct:fail({no_datapoint_with_status, Code}).
+
+-spec datapoint_attributes(#histogram_datapoint{}) ->
+    #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
+datapoint_attributes(#histogram_datapoint{attributes = Attrs}) when is_map(Attrs) ->
+    Attrs.

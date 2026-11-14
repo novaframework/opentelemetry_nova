@@ -84,9 +84,7 @@ format_histogram(_Config) ->
                     bucket_counts = [1, 1, 1, 0],
                     explicit_bounds = [0.01, 0.05, 0.1],
                     exemplars = [],
-                    flags = 0,
-                    min = 0.005,
-                    max = 0.1
+                    flags = 0
                 }
             ],
             aggregation_temporality = temporality_cumulative
@@ -421,9 +419,7 @@ unit_suffix_seconds(_Config) ->
                     bucket_counts = [1, 0],
                     explicit_bounds = [1.0],
                     exemplars = [],
-                    flags = 0,
-                    min = 0.5,
-                    max = 0.5
+                    flags = 0
                 }
             ],
             aggregation_temporality = temporality_cumulative
@@ -574,13 +570,14 @@ http_endpoint(_Config) ->
     },
     otel_nova_prom_exporter:export(metrics, [Metric], undefined, #{}),
 
-    {ok, {{_, 200, _}, Headers, Body}} =
-        httpc:request(get, {"http://localhost:19464/metrics", []}, [], []),
-
-    ContentType = proplists:get_value("content-type", Headers),
-    ?assertMatch("text/plain" ++ _, ContentType),
-    ?assertMatch({match, _}, re:run(Body, "test_http 42")),
-    ok.
+    Url = "http://localhost:19464/metrics",
+    case httpc:request(get, {Url, []}, [], [{body_format, binary}]) of
+        {ok, {{_, 200, _}, Headers, Body}} when is_list(Headers), is_binary(Body) ->
+            ?assertMatch("text/plain" ++ _, proplists:get_value("content-type", Headers)),
+            ?assertMatch({match, _}, re:run(Body, "test_http 42"));
+        Other ->
+            ct:fail({unexpected_response, Other})
+    end.
 
 %%--------------------------------------------------------------------
 %% Helpers
