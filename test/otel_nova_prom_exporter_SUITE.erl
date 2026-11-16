@@ -1,8 +1,34 @@
 -module(otel_nova_prom_exporter_SUITE).
 -behaviour(ct_suite).
 
--compile(export_all).
--compile(nowarn_export_all).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    format_histogram/1,
+    format_counter/1,
+    format_gauge/1,
+    format_updown_counter/1,
+    label_dots_to_underscores/1,
+    label_escaping/1,
+    invalid_utf8_label_value/1,
+    list_attributes_share_the_series_of_a_map/1,
+    string_label_value/1,
+    label_value_without_a_text_form/1,
+    delta_series_overflow/1,
+    cumulative_series_overflow/1,
+    cumulative_histogram_series_overflow/1,
+    overflow_attrs_do_not_consume_series/1,
+    meta_row_stores_no_datapoints/1,
+    second_exporter_instance_is_ignored/1,
+    unit_suffix_seconds/1,
+    unit_suffix_bytes/1,
+    empty_metrics/1,
+    delta_accumulation/1,
+    delta_updown_counter_accumulates/1,
+    cumulative_counter_replaces/1,
+    cumulative_histogram_replaces/1,
+    reader_api_export_3/1,
+    http_endpoint/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -21,6 +47,9 @@ all() ->
         label_dots_to_underscores,
         label_escaping,
         invalid_utf8_label_value,
+        list_attributes_share_the_series_of_a_map,
+        string_label_value,
+        label_value_without_a_text_form,
         delta_series_overflow,
         cumulative_series_overflow,
         cumulative_histogram_series_overflow,
@@ -81,9 +110,7 @@ format_histogram(_Config) ->
                     bucket_counts = [1, 1, 1, 0],
                     explicit_bounds = [0.01, 0.05, 0.1],
                     exemplars = [],
-                    flags = 0,
-                    min = 0.005,
-                    max = 0.1
+                    flags = 0
                 }
             ],
             aggregation_temporality = temporality_cumulative
@@ -280,6 +307,48 @@ invalid_utf8_label_value(_Config) ->
     ?assertEqual(Output, unicode:characters_to_binary(Output)),
     ?assertMatch({match, _}, re:run(Output, ~"hits_total\\{method=\"_INVALID_UTF8\"\\} 1\n")).
 
+list_attributes_share_the_series_of_a_map(_Config) ->
+    [
+        ok = otel_nova_prom_exporter:export(
+            [sum_metric(hits, temporality_delta, true, [{Attrs, 1}])], undefined, #{}
+        )
+     || Attrs <- [[{method, ~"GET"}, {code, 200}], #{code => 200, method => ~"GET"}]
+    ],
+    ?assertMatch(
+        {match, _},
+        re:run(
+            otel_nova_prom_exporter:get_metrics(),
+            ~"hits_total\\{code=\"200\",method=\"GET\"\\} 2\n"
+        )
+    ).
+
+string_label_value(_Config) ->
+    Metric = sum_metric(hits, temporality_delta, true, [{#{method => "GET"}, 1}]),
+    ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+    ?assertMatch(
+        {match, _},
+        re:run(otel_nova_prom_exporter:get_metrics(), ~"hits_total\\{method=\"GET\"\\} 1\n")
+    ).
+
+label_value_without_a_text_form(_Config) ->
+    [
+        begin
+            Metric = sum_metric(hits, temporality_delta, true, [{#{tags => Value}, 1}]),
+            ok = otel_nova_prom_exporter:export([Metric], undefined, #{}),
+            ?assertMatch(
+                {match, _},
+                re:run(
+                    otel_nova_prom_exporter:get_metrics(),
+                    ~"hits_total\\{tags=\"_UNSUPPORTED\"\\} 1\n"
+                ),
+                Value
+            ),
+            ok = otel_nova_prom_exporter:shutdown(),
+            {ok, _} = otel_nova_prom_exporter:init(#{})
+        end
+     || Value <- [[a, b], [1.5, 2.5], [true, false], {a, b}]
+    ].
+
 delta_series_overflow(_Config) ->
     Datapoints = [{#{n => N}, 1} || N <- lists:seq(1, 2500)],
     ok = otel_nova_prom_exporter:export(
@@ -376,9 +445,7 @@ unit_suffix_seconds(_Config) ->
                     bucket_counts = [1, 0],
                     explicit_bounds = [1.0],
                     exemplars = [],
-                    flags = 0,
-                    min = 0.5,
-                    max = 0.5
+                    flags = 0
                 }
             ],
             aggregation_temporality = temporality_cumulative
@@ -529,13 +596,14 @@ http_endpoint(_Config) ->
     },
     otel_nova_prom_exporter:export(metrics, [Metric], undefined, #{}),
 
-    {ok, {{_, 200, _}, Headers, Body}} =
-        httpc:request(get, {"http://localhost:19464/metrics", []}, [], []),
-
-    ContentType = proplists:get_value("content-type", Headers),
-    ?assertMatch("text/plain" ++ _, ContentType),
-    ?assertMatch({match, _}, re:run(Body, "test_http 42")),
-    ok.
+    Url = "http://localhost:19464/metrics",
+    case httpc:request(get, {Url, []}, [], [{body_format, binary}]) of
+        {ok, {{_, 200, _}, Headers, Body}} when is_list(Headers), is_binary(Body) ->
+            ?assertMatch("text/plain" ++ _, proplists:get_value("content-type", Headers)),
+            ?assertMatch({match, _}, re:run(Body, "test_http 42"));
+        Other ->
+            ct:fail({unexpected_response, Other})
+    end.
 
 %%--------------------------------------------------------------------
 %% Helpers

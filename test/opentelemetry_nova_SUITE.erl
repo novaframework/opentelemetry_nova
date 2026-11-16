@@ -1,12 +1,63 @@
 -module(opentelemetry_nova_SUITE).
 -behaviour(ct_suite).
 
--compile(export_all).
--compile(nowarn_export_all).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    stream_handler_creates_span/1,
+    stream_handler_captures_status/1,
+    stream_handler_sets_error_on_5xx/1,
+    stream_handler_sets_error_type_on_5xx/1,
+    stream_handler_ends_span_on_auth_rejection/1,
+    stream_handler_protocol_version/1,
+    stream_handler_client_address_xff/1,
+    stream_handler_client_address_forwarded/1,
+    stream_handler_client_address_peer_fallback/1,
+    stream_handler_ignores_forwarded_for_by_default/1,
+    stream_handler_rejects_invalid_forwarded_for/1,
+    stream_handler_trusts_listed_forwarding_headers/1,
+    stream_handler_normalises_unknown_method/1,
+    stream_handler_tags_stream_failure/1,
+    stream_handler_sets_redacted_url_query/1,
+    stream_handler_url_query_options/1,
+    stream_handler_captures_request_headers/1,
+    stream_handler_captures_response_headers/1,
+    stream_handler_sets_opt_in_attributes/1,
+    stream_handler_ignores_failure_after_response/1,
+    stream_handler_records_upgrade_status/1,
+    early_error_records_span_and_duration/1,
+    early_error_reports_the_response_downstream_handlers_return/1,
+    early_error_ignores_failed_stream_init/1,
+    plugin_enriches_span/1,
+    plugin_sets_http_route/1,
+    plugin_sets_http_route_with_bindings/1,
+    plugin_folds_catch_all_tail_into_route/1,
+    plugin_canonicalises_route/1,
+    plugin_omits_undeterminable_route/1,
+    plugin_prefers_route_from_nova/1,
+    plugin_ignores_invalid_route_from_nova/1,
+    plugin_sets_logger_metadata_with_trace_ids/1,
+    plugin_tags_crash_from_crash_info/1,
+    plugin_uses_span_name_formatter/1,
+    plugin_falls_back_when_span_name_formatter_fails/1,
+    plugin_ignores_crash_info_without_reason/1,
+    plugin_skips_logger_metadata_without_valid_span/1,
+    stream_handler_restores_context_on_terminate/1,
+    trace_context_propagation/1,
+    metrics_request_duration/1,
+    metrics_request_duration_with_route/1,
+    metrics_server_attributes_need_allowlist/1,
+    metrics_error_type_in_metrics/1,
+    metrics_active_requests/1,
+    metrics_body_sizes/1,
+    stream_handler_counts_streamed_response_body/1,
+    metrics_include_added_attributes/1,
+    metrics_stream_duration_option_applies_to_event_streams/1,
+    metrics_stream_duration_is_set_per_request/1,
+    metrics_carry_exemplars_of_the_server_span/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
--include_lib("opentelemetry_api/include/otel_tracer.hrl").
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 -include_lib("opentelemetry_experimental/include/otel_metrics.hrl").
@@ -49,6 +100,10 @@ all() ->
         stream_handler_captures_response_headers,
         stream_handler_sets_opt_in_attributes,
         stream_handler_ignores_failure_after_response,
+        stream_handler_records_upgrade_status,
+        early_error_records_span_and_duration,
+        early_error_reports_the_response_downstream_handlers_return,
+        early_error_ignores_failed_stream_init,
         plugin_enriches_span,
         plugin_sets_http_route,
         plugin_sets_http_route_with_bindings,
@@ -71,7 +126,10 @@ all() ->
         metrics_error_type_in_metrics,
         metrics_active_requests,
         metrics_body_sizes,
+        stream_handler_counts_streamed_response_body,
         metrics_include_added_attributes,
+        metrics_stream_duration_option_applies_to_event_streams,
+        metrics_stream_duration_is_set_per_request,
         metrics_carry_exemplars_of_the_server_span
     ].
 
@@ -112,7 +170,8 @@ end_per_testcase(_TestCase, _Config) ->
             sensitive_headers,
             opt_in_attributes,
             span_name_formatter,
-            trust_incoming_context
+            trust_incoming_context,
+            stream_duration
         ]
     ],
     otel_ctx:clear(),
@@ -129,7 +188,7 @@ stream_handler_creates_span(_Config) ->
 
     receive
         {span, Span = #span{name = Name}} ->
-            ?assertEqual(<<"HTTP GET">>, Name),
+            ?assertEqual(<<"GET">>, Name),
             Attrs = otel_nova_test_util:span_attrs(Span),
             ?assertEqual(<<"GET">>, maps:get('http.request.method', Attrs)),
             ?assertEqual(<<"/users">>, maps:get('url.path', Attrs)),
@@ -573,6 +632,117 @@ stream_handler_ignores_failure_after_response(_Config) ->
         )
     ).
 
+stream_handler_records_upgrade_status(_Config) ->
+    {_Cmds, Ws0} = otel_nova_stream_h:init(1, make_req(~"GET", ~"/upgrade/ws"), stream_opts()),
+    {_Cmds1, Ws1} = otel_nova_stream_h:info(
+        1, {switch_protocol, #{}, cowboy_websocket, undefined}, Ws0
+    ),
+    otel_nova_stream_h:terminate(1, switch_protocol, Ws1),
+    WsAttrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/upgrade/ws")),
+    ?assertEqual(101, maps:get('http.response.status_code', WsAttrs)),
+    ?assertNot(maps:is_key('error.type', WsAttrs)),
+    %% An h2c upgrade moves the request to HTTP/2, where it is answered.
+    {_Cmds2, H2c0} = otel_nova_stream_h:init(1, make_req(~"GET", ~"/upgrade/h2c"), stream_opts()),
+    {_Cmds3, H2c1} = otel_nova_stream_h:info(
+        1, {switch_protocol, #{}, cowboy_http2, undefined}, H2c0
+    ),
+    {_Cmds4, H2c2} = otel_nova_stream_h:info(1, {headers, 200, #{}}, H2c1),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Early} -> ct:fail({span_ended_before_the_response, Early})
+    after 300 ->
+        ok
+    end,
+    otel_nova_stream_h:terminate(1, normal, H2c2),
+    H2cAttrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/upgrade/h2c")),
+    ?assertEqual(200, maps:get('http.response.status_code', H2cAttrs)).
+
+early_error_records_span_and_duration(_Config) ->
+    PartialReq = #{
+        ref => otel_nova_test,
+        peer => {{127, 0, 0, 1}, 4711},
+        method => ~"PROPFIND",
+        path => ~"/early/unit",
+        qs => ~"token=s3cr3t",
+        version => 'HTTP/1.1',
+        headers => #{~"cookie" => ~"s3cr3t"}
+    },
+    Resp = {response, 431, #{~"content-length" => ~"0"}, <<>>},
+    Reason = {connection_error, protocol_error, 'A header value is too large.'},
+    ?assertEqual(
+        Resp, otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []})
+    ),
+    Span = otel_nova_test_util:receive_span(~"/early/unit"),
+    ?assertEqual(~"HTTP", Span#span.name),
+    ?assertEqual(?SPAN_KIND_SERVER, Span#span.kind),
+    ?assertEqual(
+        #{
+            'http.request.method' => ~"_OTHER",
+            'http.request.method_original' => ~"PROPFIND",
+            'http.response.status_code' => 431,
+            'error.type' => ~"connection_error",
+            'url.path' => ~"/early/unit",
+            'network.protocol.version' => ~"1.1",
+            'network.peer.address' => ~"127.0.0.1",
+            'network.peer.port' => 4711,
+            'client.address' => ~"127.0.0.1"
+        },
+        otel_nova_test_util:span_attrs(Span)
+    ),
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        Expected = #{
+            'http.request.method' => ~"_OTHER",
+            'http.response.status_code' => 431,
+            'error.type' => ~"connection_error"
+        },
+        [DP] = [DP || DP = #histogram_datapoint{attributes = A} <- Datapoints, A =:= Expected],
+        ?assertEqual(1, DP#histogram_datapoint.count)
+    end),
+    ?assertReceiveMetric('http.server.active_requests', fun(#metric{data = Data}) ->
+        #sum{datapoints = Datapoints} = Data,
+        ?assertEqual([], [V || #datapoint{value = V} <- Datapoints, V =/= 0])
+    end).
+
+early_error_reports_the_response_downstream_handlers_return(_Config) ->
+    PartialReq = #{ref => otel_nova_test, peer => {{127, 0, 0, 1}, 4712}},
+    Reason = {stream_error, protocol_error, 'Malformed request.'},
+    ?assertEqual(
+        {response, 499, #{}, <<>>},
+        otel_nova_stream_h:early_error(1, Reason, PartialReq, {response, 400, #{}, <<>>}, #{
+            stream_handlers => [early_error_rewrite_h]
+        })
+    ),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} ->
+            ?assertMatch(
+                #{'http.response.status_code' := 499, 'error.type' := ~"stream_error"},
+                otel_nova_test_util:span_attrs(Span)
+            )
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+%% The 500 Cowboy sends over HTTP/1.1 when a stream handler's init/3 raised;
+%% init/3 has recorded that request already.
+early_error_ignores_failed_stream_init(_Config) ->
+    Resp = {response, 500, #{}, <<>>},
+    Reason = {internal_error, {error, boom}, 'Unhandled exception in cowboy_stream:init/3.'},
+    ?assertEqual(
+        Resp,
+        otel_nova_stream_h:early_error(1, Reason, make_req(~"GET", ~"/early/init"), Resp, #{
+            stream_handlers => []
+        })
+    ),
+    otel_tracer_provider:force_flush(),
+    receive
+        {span, Span} -> ct:fail({unexpected_span, Span})
+    after 300 ->
+        ok
+    end.
+
 stream_handler_ends_span_on_auth_rejection(_Config) ->
     %% Simulates what happens when nova_security_handler returns {stop, Req}:
     %% the stream handler's terminate/3 still runs and ends the span.
@@ -771,14 +941,10 @@ plugin_sets_logger_metadata_with_trace_ids(_Config) ->
     Env = #{app => my_app, callback => fun fake_controller:index/1},
     State = run_plugin(DownReq, Env, State0),
 
-    Meta = logger:get_process_metadata(),
-    ?assert(is_map(Meta)),
-    TraceId = maps:get(trace_id, Meta, undefined),
-    SpanId = maps:get(span_id, Meta, undefined),
-    ?assert(is_binary(TraceId)),
-    ?assert(is_binary(SpanId)),
-    ?assertEqual(32, byte_size(TraceId)),
-    ?assertEqual(16, byte_size(SpanId)),
+    ?assertMatch(
+        #{trace_id := <<_:32/binary>>, span_id := <<_:16/binary>>},
+        logger:get_process_metadata()
+    ),
 
     {_Cmds1, State1} = otel_nova_stream_h:info(1, {response, 200, #{}, <<"OK">>}, State),
     otel_nova_stream_h:terminate(1, normal, State1),
@@ -845,7 +1011,7 @@ metrics_request_duration(_Config) ->
         DP = find_datapoint_with_status(200, Datapoints),
         ?assert(DP#histogram_datapoint.sum >= 0),
         ?assert(DP#histogram_datapoint.count >= 1),
-        Attrs = DP#histogram_datapoint.attributes,
+        Attrs = datapoint_attributes(DP),
         ?assertEqual(<<"GET">>, maps:get('http.request.method', Attrs)),
         ?assertEqual(<<"http">>, maps:get('url.scheme', Attrs)),
         ?assertNotMatch(#{'server.address' := _}, Attrs),
@@ -896,7 +1062,7 @@ metrics_request_duration_with_route(_Config) ->
     ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
         #histogram{datapoints = Datapoints} = Data,
         DP = find_datapoint_with_status(200, Datapoints),
-        Attrs = DP#histogram_datapoint.attributes,
+        Attrs = datapoint_attributes(DP),
         ?assertEqual(<<"/users">>, maps:get('http.route', Attrs)),
         ?assertEqual(200, maps:get('http.response.status_code', Attrs))
     end).
@@ -913,7 +1079,7 @@ metrics_error_type_in_metrics(_Config) ->
     ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
         #histogram{datapoints = Datapoints} = Data,
         DP = find_datapoint_with_status(500, Datapoints),
-        Attrs = DP#histogram_datapoint.attributes,
+        Attrs = datapoint_attributes(DP),
         ?assertEqual(<<"500">>, maps:get('error.type', Attrs))
     end).
 
@@ -961,6 +1127,22 @@ metrics_body_sizes(_Config) ->
         ?assertEqual(byte_size(RespBody), DP#histogram_datapoint.sum),
         ?assert(DP#histogram_datapoint.count >= 1)
     end).
+
+%% cowboy_req:stream_body/3 sends {data, Pid, IsFin, Data}.
+stream_handler_counts_streamed_response_body(_Config) ->
+    ok = application:set_env(opentelemetry_nova, opt_in_attributes, ['http.response.body.size']),
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"GET", ~"/streamed"), stream_opts()),
+    State = send_infos(
+        [
+            {headers, 200, #{}},
+            {data, self(), nofin, ~"12345"},
+            {data, self(), fin, {sendfile, 0, 10, "/tmp/file"}}
+        ],
+        State0
+    ),
+    otel_nova_stream_h:terminate(1, normal, State),
+    Attrs = otel_nova_test_util:span_attrs(otel_nova_test_util:receive_span(~"/streamed")),
+    ?assertEqual(15, maps:get('http.response.body.size', Attrs)).
 
 metrics_include_added_attributes(_Config) ->
     Req = make_req(~"POST", ~"/labelled"),
@@ -1024,6 +1206,42 @@ metrics_include_added_attributes(_Config) ->
             'http.server.response.body.size'
         ]
     ].
+
+metrics_stream_duration_option_applies_to_event_streams(_Config) ->
+    EventStream = #{~"content-type" => [~"Text/", ~"Event-Stream; charset=utf-8"]},
+    ?assertEqual(1, streamed_durations(~"/stream/default", EventStream, [])),
+    ok = application:set_env(opentelemetry_nova, stream_duration, sometimes),
+    ?assertEqual(1, streamed_durations(~"/stream/invalid-option", EventStream, [])),
+    ok = application:set_env(opentelemetry_nova, stream_duration, exclude),
+    ?assertEqual(0, streamed_durations(~"/stream/excluded", EventStream, [])),
+    ?assertEqual(
+        1, streamed_durations(~"/stream/json", #{~"content-type" => ~"application/json"}, [])
+    ),
+    ?assertEqual(1, streamed_durations(~"/stream/untyped", #{}, [])).
+
+metrics_stream_duration_is_set_per_request(_Config) ->
+    ?assertEqual(
+        0, streamed_durations(~"/stream/marked", #{}, [{otel_nova_stream_duration, exclude}])
+    ),
+    ?assertEqual(
+        1,
+        streamed_durations(~"/stream/invalid-mode", #{}, [{otel_nova_stream_duration, sometimes}])
+    ),
+    ok = application:set_env(opentelemetry_nova, stream_duration, exclude),
+    EventStream = #{~"content-type" => ~"text/event-stream"},
+    ?assertEqual(
+        1, streamed_durations(~"/stream/kept", EventStream, [{otel_nova_stream_duration, full}])
+    ),
+    {State, DownReq} = start_stream(1, make_req(~"GET", ~"/stream/cast")),
+    ok = opentelemetry_nova:set_stream_duration(DownReq, first_byte),
+    receive
+        {{_Pid, 1}, Cast} -> ?assertEqual({otel_nova_stream_duration, first_byte}, Cast)
+    after 1000 ->
+        ct:fail(no_stream_duration_cast)
+    end,
+    otel_nova_stream_h:terminate(1, normal, State),
+    Uninstrumented = make_req(~"GET", ~"/stream/uninstrumented"),
+    ?assertEqual(ok, opentelemetry_nova:set_stream_duration(Uninstrumented, exclude)).
 
 metrics_carry_exemplars_of_the_server_span(_Config) ->
     Path = ~"/exemplar",
@@ -1118,7 +1336,7 @@ plugin_route(Req, Env) ->
             {Route, Expected} =
                 case otel_nova_test_util:span_attrs(Span) of
                     #{'http.route' := R} when is_binary(R) -> {R, <<"GET ", R/binary>>};
-                    #{} -> {undefined, ~"HTTP GET"}
+                    #{} -> {undefined, ~"GET"}
                 end,
             ?assertEqual(Expected, Span#span.name),
             Route
@@ -1179,6 +1397,36 @@ metric_error_type(Path, Name) ->
         ct:fail({timeout_waiting_for_metric, Path})
     end.
 
+%% Streams a response with Headers on its own route and returns how many
+%% duration measurements that route has.
+streamed_durations(Route, Headers, Infos) ->
+    {_Cmds, State0} = otel_nova_stream_h:init(1, make_req(~"GET", Route), stream_opts()),
+    State1 = send_infos([{otel_nova_route, Route} | Infos] ++ [{headers, 200, Headers}], State0),
+    otel_nova_stream_h:terminate(1, normal, State1),
+    drain_spans(),
+    drain_metrics(),
+    otel_meter_server:force_flush(),
+    ?assertReceiveMetric('http.server.request.duration', fun(#metric{data = Data}) ->
+        #histogram{datapoints = Datapoints} = Data,
+        lists:sum([
+            Count
+         || #histogram_datapoint{attributes = #{'http.route' := R}, count = Count} <- Datapoints,
+            R =:= Route
+        ])
+    end).
+
+send_infos([], State) ->
+    State;
+send_infos([Info | Infos], State0) ->
+    {_Cmds, State} = otel_nova_stream_h:info(1, Info, State0),
+    send_infos(Infos, State).
+
+drain_metrics() ->
+    receive
+        {otel_metric, _} -> drain_metrics()
+    after 0 -> ok
+    end.
+
 forward_casts(StreamID, State0) ->
     receive
         {{_Pid, StreamID}, Msg = {_Tag, _Value}} ->
@@ -1223,10 +1471,16 @@ drain_spans() ->
     after 100 -> ok
     end.
 
-find_datapoint_with_status(Code, [DP = #histogram_datapoint{attributes = Attrs} | Rest]) ->
-    case maps:get('http.response.status_code', Attrs, undefined) of
+-spec find_datapoint_with_status(integer(), [#histogram_datapoint{}]) -> #histogram_datapoint{}.
+find_datapoint_with_status(Code, [DP | Rest]) ->
+    case maps:get('http.response.status_code', datapoint_attributes(DP), undefined) of
         Code -> DP;
         _ -> find_datapoint_with_status(Code, Rest)
     end;
 find_datapoint_with_status(Code, []) ->
     ct:fail({no_datapoint_with_status, Code}).
+
+-spec datapoint_attributes(#histogram_datapoint{}) ->
+    #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
+datapoint_attributes(#histogram_datapoint{attributes = Attrs}) when is_map(Attrs) ->
+    Attrs.

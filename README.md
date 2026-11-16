@@ -36,6 +36,22 @@ before your own application in the release (or in `applications` of your
   `badmatch`, ...) instead of `500` on spans and metrics. A stream that ends
   without a response has the Cowboy reason (`socket_error`, ...). Alerts that
   match `error_type="500"` need updating.
+- Requests Cowboy rejects before it creates a request (400, 408, 414, 431,
+  501, 505) are now traced and counted in `http.server.request.duration`, with
+  `error.type` set and no `url.scheme` (see
+  [Rejected requests](#rejected-requests)). Totals over that histogram rise by
+  the number of such requests.
+- A WebSocket upgrade has `http.response.status_code` `101` on the span and
+  the metrics, where it had none. Over HTTP/2 the span, the duration and
+  `http.server.active_requests` now end at the handshake instead of when the
+  WebSocket closes.
+- Response bodies sent with `cowboy_req:stream_body/3` are counted in
+  `http.server.response.body.size` and `http.response.body.size`. They were
+  left out, so streamed responses add series and bytes to that histogram.
+- A request without a route template, such as a 404 rendered by Nova's
+  router, is named after the method alone (`GET`) instead of `HTTP GET`, as
+  the semantic conventions specify. Queries and `otel_nova_sampler` entries
+  that match the span name `HTTP GET` need updating.
 
 ## Upgrading from 0.4
 
@@ -169,6 +185,7 @@ Set these in the `opentelemetry_nova` application environment:
 | `request_headers` | `[]` | Request header names recorded as `http.request.header.<name>` span attributes. Names are lowercased. |
 | `response_headers` | `[]` | Response header names recorded as `http.response.header.<name>` span attributes. Names are lowercased. |
 | `span_name_formatter` | unset | `{Mod, Fun}`: the plugin names the server span `Mod:Fun(Method, Route)`. `Method` is the normalised method (`~"_OTHER"` for a non-standard one), `Route` the route template or `undefined`. A crash or a non-binary result keeps the default name and is logged as `otel_nova_instrumentation_failed`. |
+| `stream_duration` | `full` | How `http.server.request.duration` measures a `text/event-stream` response: `full` (until the stream ends), `first_byte` (until the response headers are sent) or `exclude` (no duration recorded). See [Long-lived responses](#long-lived-responses). |
 | `opt_in_attributes` | `[]` | Opt-in span attributes to add: any of `'client.port'`, `'network.local.address'`, `'network.local.port'`, `'network.transport'`, `'http.request.body.size'`, `'http.response.body.size'`. |
 | `sensitive_headers` | `[]` | More captured headers whose value is recorded as `[~"REDACTED"]`. Always added to the defaults `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`, `x-csrf-token` and `x-amz-security-token`, which cannot be turned off. Names are lowercased. |
 
@@ -333,7 +350,8 @@ list your application's own port in another `ingress` rule as well.
 
 Each metric keeps at most 2000 series. Further attribute sets are added to one
 overflow series labelled `otel_metric_overflow="true"`. Label values that are
-not valid UTF-8 are rendered as `_INVALID_UTF8`, so the output always parses.
+not valid UTF-8 are rendered as `_INVALID_UTF8`, and a tuple or a list that is
+not a string as `_UNSUPPORTED`, so the output always parses.
 
 `opentelemetry_nova:setup(#{prometheus => #{port => 9464}})` still works and
 starts the server linked to the caller, but the supervised child is
@@ -367,20 +385,22 @@ Server spans are created for every HTTP request with the following attributes:
 | `http.response.body.size` | Response body bytes sent, set when the span ends (opt-in) |
 | `http.request.header.<name>` | Request headers listed in `request_headers` |
 | `http.response.header.<name>` | Response headers listed in `response_headers` |
-| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors, or the Cowboy reason (`socket_error`, ...) when the stream ends without a response |
+| `error.type` | Crash tag on a Nova crash (see [Crashes](#crashes)), otherwise the status code as string on 5xx errors, or the Cowboy reason (`socket_error`, ...) when the stream ends without a response or Cowboy rejects the request |
 | `nova.app` | Nova application name |
 | `nova.controller` | Controller module |
 | `nova.action` | Action function |
 
-Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`).
-For an `_OTHER` method the method part is `HTTP`. Set `span_name_formatter` to
-name spans differently. Keep the names low-cardinality.
+Span names follow the `{METHOD} {route}` convention (e.g. `GET /users/:id`),
+or `{METHOD}` alone when there is no route template. For an `_OTHER` method
+the method part is `HTTP`. Set `span_name_formatter` to name spans
+differently. Keep the names low-cardinality.
 
 `http.route` is the route template, never the raw path. Bound segments become
 `:name`, and the tail matched by a catch-all route, including Nova static
 routes such as `/assets/[...]`, becomes `[...]`, so every file under `/assets`
-shares one label. When the template cannot be determined, `http.route` is left
-out and the span keeps the name `HTTP {METHOD}`. This keeps the number of metric
+shares one label. When the template cannot be determined, or no route
+matched and Nova's router rendered the 404 or 405 itself, `http.route` is left
+out and the span keeps the name `{METHOD}`. This keeps the number of metric
 series bounded by the route table.
 
 Notes:
@@ -388,17 +408,24 @@ Notes:
 - `client.address` uses a forwarding header only when
   `trust_forwarded_for` is enabled, and only when the address in it is a valid
   IP address. See [Options](#4-options).
-- `http.route` is taken from the `nova_route` key that newer Nova versions
-  put in the Req. With older Nova versions it is rebuilt from the request path
-  and the binding values. The rebuilt label is wrong for two kinds of path: a literal segment equal to a binding value (`/users/users`
-  on `/users/:id` becomes `/:id/:id`), and two bindings with the same value
+- `http.route` is taken from the `nova_route` key that Nova versions which
+  expose the matched route template put in the Req. With other Nova versions
+  it is rebuilt from the request path and the binding values. The rebuilt
+  label is wrong for two kinds of path: a literal segment equal to a binding
+  value (`/users/users` on `/users/:id` becomes `/:id/:id`), and two bindings
+  with the same value
   (`/teams/7/users/7` on `/teams/:team/users/:user` shows one of the two names
   in both places). The labels stay bounded; only their text is wrong.
+- A WebSocket upgrade is recorded as the handshake, not the lifetime of the
+  socket: the server span ends, the duration is recorded and
+  `http.server.active_requests` goes down when Cowboy answers the upgrade,
+  with status `101` over HTTP/1.1 and `200` for an extended CONNECT over
+  HTTP/2.
 - The trace context is not detached on a WebSocket upgrade. This is harmless.
   Over HTTP/1.1 the WebSocket runs in the connection process, which never has
   the context attached. Over HTTP/2 it keeps running in the request process,
   so spans the WebSocket handler creates are children of the upgrade request's
-  server span.
+  server span, which has ended by then.
 - With `cowboy_compress_h` after `otel_nova_stream_h`, the response body size
   is measured before compression.
 
@@ -441,6 +468,43 @@ tag of the reason Cowboy reports (`socket_error`, `internal_error`,
 `stream_error`, `connection_error`, `stop`) on the span and the metrics, and
 an error span status. Its duration is still recorded.
 
+A request Cowboy rejects before it reaches Nova is covered in
+[Rejected requests](#rejected-requests).
+
+## Rejected requests
+
+Cowboy answers a request it cannot parse (malformed request line, oversized
+request line or headers, headers that arrive too slowly, unsupported method or
+version) with a 400, 408, 414, 431, 501 or 505 before a request exists. Each
+one is recorded:
+
+- `http.server.request.duration` gets one measurement with
+  `http.request.method`, `http.response.status_code` and `error.type`, and no
+  other attribute: the scheme, host and route of such a request are unknown,
+  and nothing else from the request line or the headers becomes a label. The
+  method is the parsed method, normalised as usual, or `_OTHER` when Cowboy
+  rejected the request before it had a method (a bad or oversized request
+  line). `error.type` is the tag of the reason Cowboy gives
+  (`connection_error`, `stream_error`), also for a 4xx. The value is the time
+  spent answering, close to zero.
+- A server span named after the method (`GET`, or `HTTP` without one) is
+  started and ended at once. It is always a root span: the headers of a
+  rejected request are not used for trace context. Its attributes are
+  `http.request.method`, `http.request.method_original`,
+  `http.response.status_code`, `error.type`, the peer address and port,
+  `client.address` (the peer), and `url.path` and `network.protocol.version`
+  when Cowboy had parsed the request line. Headers and the query string are
+  not recorded. The span status is error for a 5xx only. `otel_nova_sampler`
+  entries match these spans by method and path when Cowboy had parsed the
+  request line. The entry `~"HTTP"` drops the ones without a method, together
+  with every request whose method is `_OTHER`.
+- `http.server.active_requests` and the body size histograms are not touched.
+
+Over HTTP/1.1, the 500 Cowboy sends when a stream handler after
+`otel_nova_stream_h` fails to start is recorded once, as a stream that ended
+without a response: `error.type` is `internal_error` and there is no status
+code.
+
 ## Metrics
 
 | Metric | Type | Attributes |
@@ -465,6 +529,46 @@ trace and span id of its request:
 
 The default `trace_based` exemplar filter keeps exemplars only for sampled
 spans. `http.server.active_requests` has none.
+
+### Long-lived responses
+
+`http.server.request.duration` is the time from the request to the end of the
+stream. That is the lifetime of the connection for server-sent events, a
+chunked download or a long poll, and a few of those dominate the latency
+percentiles of every other request. By default nothing changes: they are
+recorded in full, as the semantic conventions define the metric.
+
+For `text/event-stream` responses sent with `cowboy_req:stream_reply`, set
+`stream_duration`:
+
+```erlang
+{opentelemetry_nova, [{stream_duration, first_byte}]}
+```
+
+- `first_byte`: the time until the response headers are handed to Cowboy.
+  The semantic conventions say the duration should equal the duration of the
+  server span, which this no longer does.
+- `exclude`: no duration is recorded for the request.
+- `full`: the default.
+
+For any other response, or to decide per request, call
+`opentelemetry_nova:set_stream_duration/2` from the controller or a plugin
+before the response starts. It overrides the option:
+
+```erlang
+poll(Req) ->
+    ok = opentelemetry_nova:set_stream_duration(Req, exclude),
+    {json, wait_for_update()}.
+```
+
+Only the duration histogram is affected. The server span still covers the
+whole stream and ends once, `http.server.active_requests` counts the request
+until the stream ends, and the body size histograms are recorded. The
+measurement, when there is one, is still recorded when the stream ends, so an
+open stream is not in the histogram yet.
+
+A WebSocket upgrade needs none of this: it is always recorded as the
+handshake (see the notes under [Span Attributes](#span-attributes)).
 
 ### Per-request metric attributes
 

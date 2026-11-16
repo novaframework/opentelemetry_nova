@@ -2,9 +2,9 @@
 -moduledoc false.
 
 -export([options/0, span/3, metric/3, response_headers/2, body_sizes/3, final_metric/5]).
--export([add_extra_metric/2]).
+-export([add_extra_metric/2, early_error_span/2, early_error_metric/3]).
 
--export_type([options/0, attributes/0]).
+-export_type([options/0, attributes/0, stream_duration/0]).
 
 -define(SENSITIVE_HEADERS, [
     ~"authorization",
@@ -43,6 +43,8 @@
 
 -type attributes() :: #{opentelemetry:attribute_key() => opentelemetry:attribute_value()}.
 
+-type stream_duration() :: full | first_byte | exclude.
+
 -type options() :: #{
     trust_forwarded_for := [binary()],
     metric_server_hosts := [binary()] | undefined,
@@ -52,7 +54,8 @@
     request_headers := [binary()],
     sensitive_headers := [binary()],
     response_headers := [binary()],
-    opt_in_attributes := [atom()]
+    opt_in_attributes := [atom()],
+    stream_duration := stream_duration()
 }.
 
 %% Read once per request; every value is normalised so that a malformed
@@ -90,6 +93,12 @@ options() ->
             case maps:get(opt_in_attributes, Env, []) of
                 OptIn when is_list(OptIn) -> [A || A <- OptIn, lists:member(A, ?OPT_IN_ATTRIBUTES)];
                 _ -> []
+            end,
+        stream_duration =>
+            case maps:get(stream_duration, Env, full) of
+                first_byte -> first_byte;
+                exclude -> exclude;
+                _ -> full
             end
     }.
 
@@ -224,6 +233,59 @@ server(Req, Hosts) ->
         end,
     {_IP, Port} = cowboy_req:sock(Req),
     #{'server.address' => Address, 'server.port' => Port}.
+
+%% Cowboy passes what it had parsed when it rejected the request: nothing
+%% but the peer for a bad request line, and the method, path and version once
+%% the request line was accepted. Headers are left out, since the header
+%% block is what was malformed or too large.
+-spec early_error_span(cowboy_stream:partial_req(), binary()) -> attributes().
+early_error_span(PartialReq, Method) ->
+    Groups = [
+        #{'http.request.method' => Method},
+        case PartialReq of
+            #{method := Method} ->
+                #{};
+            #{method := Original} when is_binary(Original) ->
+                #{'http.request.method_original' => Original};
+            #{} ->
+                #{}
+        end,
+        case PartialReq of
+            #{path := Path} when is_binary(Path) -> #{'url.path' => Path};
+            #{} -> #{}
+        end,
+        case PartialReq of
+            #{version := _} -> #{'network.protocol.version' => protocol_version(PartialReq)};
+            #{} -> #{}
+        end,
+        case PartialReq of
+            #{peer := {PeerAddr, PeerPort}} ->
+                PeerBin = peer_to_binary(PeerAddr),
+                #{
+                    'network.peer.address' => PeerBin,
+                    'network.peer.port' => PeerPort,
+                    'client.address' => PeerBin
+                };
+            #{} ->
+                #{}
+        end
+    ],
+    merge_all(Groups, #{}).
+
+merge_all([], Acc) -> Acc;
+merge_all([Group | Groups], Acc) -> merge_all(Groups, maps:merge(Acc, Group)).
+
+%% The method is the only attribute taken from the request, and it is
+%% normalised; the scheme, host and route of a rejected request are unknown.
+-spec early_error_metric(binary(), integer() | undefined, binary()) -> attributes().
+early_error_metric(Method, undefined, ErrorType) ->
+    #{'http.request.method' => Method, 'error.type' => ErrorType};
+early_error_metric(Method, StatusCode, ErrorType) ->
+    #{
+        'http.request.method' => Method,
+        'http.response.status_code' => StatusCode,
+        'error.type' => ErrorType
+    }.
 
 -spec final_metric(
     map(), binary() | undefined, integer() | undefined, binary() | undefined, map()

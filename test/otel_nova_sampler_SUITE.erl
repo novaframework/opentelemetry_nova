@@ -1,8 +1,22 @@
 -module(otel_nova_sampler_SUITE).
 -behaviour(ct_suite).
 
--compile(export_all).
--compile(nowarn_export_all).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    excludes_matching_server_span/1,
+    records_non_matching_server_span/1,
+    records_non_server_span_even_if_name_matches/1,
+    stream_handler_excluded_request_is_not_sampled/1,
+    stream_handler_other_request_is_sampled/1,
+    sampled_traceparent_forces_excluded_request_by_default/1,
+    untrusted_context_does_not_force_sampling/1,
+    untrusted_context_starts_new_trace_with_link/1,
+    map_config_delegates_to_sampler/1,
+    description_includes_delegate/1,
+    trust_callback_decides_per_request/1,
+    crashing_trust_callback_does_not_trust/1,
+    rejected_request_follows_exclusions_and_ignores_traceparent/1
+]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -28,7 +42,8 @@ all() ->
         map_config_delegates_to_sampler,
         description_includes_delegate,
         trust_callback_decides_per_request,
-        crashing_trust_callback_does_not_trust
+        crashing_trust_callback_does_not_trust,
+        rejected_request_follows_exclusions_and_ignores_traceparent
     ].
 
 init_per_suite(Config) ->
@@ -94,7 +109,7 @@ stream_handler_other_request_is_sampled(_Config) ->
     run_request(~"GET", ~"/users"),
     receive
         {span, #span{name = Name}} ->
-            ?assertEqual(~"HTTP GET", Name)
+            ?assertEqual(~"GET", Name)
     after 5000 ->
         ct:fail(timeout_waiting_for_span)
     end.
@@ -195,13 +210,45 @@ crashing_trust_callback_does_not_trust(_Config) ->
         ]
     ].
 
+rejected_request_follows_exclusions_and_ignores_traceparent(_Config) ->
+    Resp = {response, 431, #{}, <<>>},
+    reject(~"/metrics", Resp),
+    receive
+        {span, #span{} = Excluded} -> ct:fail({should_not_sample, Excluded})
+    after 200 ->
+        ok
+    end,
+    reject(~"/users", Resp),
+    receive
+        {span, #span{trace_id = TraceId, parent_span_id = ParentId}} ->
+            ?assertNotEqual(?TRACE_ID, TraceId),
+            ?assertEqual(undefined, ParentId)
+    after 5000 ->
+        ct:fail(timeout_waiting_for_span)
+    end.
+
+reject(Path, Resp) ->
+    PartialReq = #{
+        ref => otel_nova_test,
+        peer => {{127, 0, 0, 1}, 12345},
+        method => ~"GET",
+        path => Path,
+        qs => ~"",
+        version => 'HTTP/1.1',
+        headers => #{~"traceparent" => ?TRACEPARENT}
+    },
+    Reason = {connection_error, protocol_error, 'A header value is too large.'},
+    ?assertEqual(
+        Resp, otel_nova_stream_h:early_error(1, Reason, PartialReq, Resp, #{stream_handlers => []})
+    ).
+
 decide(Sampler, Path) ->
     otel_sampler:should_sample(
         Sampler,
         otel_ctx:new(),
         ?TRACE_ID,
         otel_links:new([], 128, 128, 128),
-        ~"HTTP GET",
+        ~"GET",
         ?SPAN_KIND_SERVER,
         #{'http.request.method' => ~"GET", 'url.path' => Path}
     ).
